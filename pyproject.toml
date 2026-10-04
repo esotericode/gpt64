@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gpt64"
+version = "0.1.0"
+description = "Vision-only frame-stepped Mario 64 harness for BizHawk"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+gpt64 = "gpt64.cli:main"
+
+[tool.setuptools]
+packages = ["gpt64"]
+
+[tool.setuptools.package-data]
+gpt64 = ["*.lua"]
