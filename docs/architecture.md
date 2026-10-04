@@ -5,7 +5,7 @@
 BizHawk already has Lua controller, screenshot, pause, and frame APIs. We can
 use those without writing an N64 emulator, a custom input plugin, or a desktop
 keyboard automation loop. Python is convenient for model adapters, experiment
-logs, replay tools, and later a dashboard.
+logs, replay tools, and the local dashboard.
 
 Mupen64Plus/Libretro remains a possible future backend for a Linux host. A
 custom Libretro frontend must also manage the N64 core's graphics context and
@@ -49,9 +49,14 @@ implements no RAM APIs at all.
 ## Model, commentary, and budget
 
 `model.py` targets `gpt-6.1-sol` explicitly through the official Responses API.
-The key comes from the local `OPENAI_API_KEY` environment variable. Requests
-use the standard service tier, medium reasoning by default, structured JSON
-output, and a 4,096-token output cap. No response-chain IDs are supplied: every
+Medium reasoning and structured JSON apply to both billing modes.
+The default ChatGPT plan path uses the documented local-app OAuth flow,
+`store:false` and `stream:true`. It omits unsupported output-cap and service-tier
+fields and requires a terminal SSE event before parsing/executing an answer.
+The exact model must be in the selected account's live catalog.
+
+The optional API path takes a key from local `OPENAI_API_KEY`, requests the
+standard tier and caps output at 4,096 tokens. No response-chain IDs are supplied: every
 turn gets at most four recent images, eight executed action records, the goal,
 and a compact memory note. Debug frame counters are not in this payload.
 
@@ -62,7 +67,7 @@ Private reasoning output items are ignored and never displayed or saved.
 An unexpected model, refusal, malformed action, or incomplete response stops
 the run without applying the requested inputs.
 
-Before generation, the input-token counting endpoint counts the same context.
+In API mode, before generation the input-token counting endpoint counts the same context.
 The app checks a reserve using the largest standard input rate (including cache
 writes) plus the entire output cap at the standard output rate. Context is also
 capped at 100,000 input tokens, below long-context pricing thresholds.
@@ -76,6 +81,29 @@ $2/$0.10/$2.50/$10 per million tokens. These are estimated standard charges,
 not authoritative account billing. Regional premiums and pricing changes are
 not modeled. An unknown request outcome retains its reserve and stops; an
 unexpected service tier also stops for billing verification. Limits are per run.
+
+## ChatGPT credentials and plan usage
+
+`auth.py` implements dynamic public-client registration, a stable opaque host
+UUID, loopback callback, one-use state, nonce and S256 PKCE. A maintained JWT
+library verifies ID-token signature, issuer, audience, expiry and nonce against
+OpenAI's discovered JWKS. Issued client IDs stay bound to verified subjects;
+different registrations remain separate even with identical emails.
+
+Tokens live outside the repository, at `%LOCALAPPDATA%/gpt64` on Windows or
+`~/.config/gpt64` on Unix. Windows uses user-bound DPAPI; Unix uses mode 0600.
+Credential writes are atomic. OS file locks serialize rotation across processes.
+Refresh uses the saved issued client ID, and replaces rotating tokens together.
+Sign-out attempts session revocation before clearing tokens, retaining the
+host/client mapping. Login hints omit retained ID tokens from authorization
+URLs. Callback URLs and all credentials are excluded from logs and exports.
+
+Plan requests record returned usage without translating it to API dollars.
+Allowance and credits are managed in ChatGPT settings. The API token-counting
+preflight and maximum-output field are not used on this preview route.
+A plan admission/usage error stops the run; there is no billing/model fallback.
+The 10-decision UI default bounds request count, not token use per request.
+Eligibility and live sign-in/inference have not been validated on a real account.
 
 ## Observer and run records
 
@@ -91,12 +119,13 @@ unconfirmed; that state is written before sending the request.
 shows the latest screenshot, brief commentary, selected inputs, token/cost
 metrics, and event timeline. It supports saved-run inspection and ZIP export.
 Local control requests require a server-issued token, a loopback Host header,
-and a local Origin when present. The API key is never returned to the browser.
+and a local Origin when present. API keys, OAuth access/refresh/ID tokens and PKCE secrets are never returned
+to the dashboard. Only account labels and readiness are public.
 There is no external UI host, CDN, analytics, or JavaScript dependency.
 
 Each run has an append-only JSONL event log (flushed and synced after each
 event), atomic state snapshots, copied screenshots, and usage/latency/API IDs.
-Logs exclude Authorization headers, API keys, raw reasoning blocks, and image
+Logs exclude Authorization headers, API keys, OAuth tokens, raw reasoning blocks, and image
 base64. They include goals, public commentary, compact notes, and visible game
 images, so users can inspect a bundle before sharing it. Archived runs are
 read-only; restarting the server does not automatically resume old sessions.
@@ -151,3 +180,5 @@ from desktop hotkeys:
 - [ClientLuaLibrary](https://github.com/TASEmulators/BizHawk/blob/2.11.1/src/BizHawk.Client.Common/lua/CommonLibs/ClientLuaLibrary.cs): pause/unpause, screenshots, OSD suppression.
 - [JoypadLuaLibrary](https://github.com/TASEmulators/BizHawk/blob/2.11.1/src/BizHawk.Client.Common/lua/CommonLibs/JoypadLuaLibrary.cs): button overrides and analog autoholds.
 - [N64Input](https://github.com/TASEmulators/BizHawk/blob/2.11.1/src/BizHawk.Emulation.Cores/Consoles/Nintendo/N64/N64Input.cs): stick axes, direction signs, button names.
+
+Official [ChatGPT plan integration](https://developers.openai.com/siwc/token-sharing-open-source), [preview limits](https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations), and [identity validation](https://developers.openai.com/siwc/website) document this authentication path.

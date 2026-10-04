@@ -18,10 +18,17 @@ MAX_OUTPUT = 4096
 INSTRUCTIONS = """You play Super Mario 64 using only screenshots and your own executed
 controller history. Pursue the user's goal. Never claim access to RAM, world
 coordinates, or invisible game state. Images are ordered oldest to newest.
+The emulator is paused while you decide. Return controller segments as data;
+the harness holds each segment for exactly its frames, releases all controls,
+pauses again, and gives you the next screenshot. You do not call emulator APIs.
 Stick x positive means right, y positive means up, relative to the game's camera.
 Use short actions (usually 4–15 emulator frames) near obstacles; 1–120 frames per
 segment, at most 16 segments and 240 frames total. Include explicit button release
 segments when useful. Re-observe if unsure; do not blindly repeat failed movement.
+Allowed buttons: A, B, Z, Start, L, R, C Up, C Down, C Left, C Right.
+Stick axes are numbers from -1 to 1. Empty buttons release buttons; zero axes
+center the stick. Buttons stay held for the segment, so use a release segment
+between distinct jump presses. Frame durations are emulator ticks, not seconds.
 Return a concise public commentary of one or two sentences, at most 280 characters,
 that explains the visible cue and selected action. Do not provide private internal
 reasoning or step-by-step deliberation. Update compact memory from visible evidence
@@ -145,6 +152,7 @@ class NoRedirect(request.HTTPRedirectHandler):
 
 
 class OpenAIClient:
+    billing_mode = "api"
     def __init__(self, key=None, timeout=120):
         self.key = key or os.environ.get("OPENAI_API_KEY", "")
         if not self.key:
@@ -168,6 +176,9 @@ class OpenAIClient:
             hints = {401: "Check your local API key", 403: "Check project/model permissions",
                      404: "The exact gpt-6.1-sol model or endpoint is unavailable to this account",
                      429: "Check API credit, limits, and rate limits"}
+            if self.billing_mode == "chatgpt":
+                hints.update({401: "Continue with ChatGPT again and grant plan usage", 403: "Check ChatGPT account eligibility, region and model permissions",
+                              429: "ChatGPT allowance may be exhausted; open ChatGPT Settings > Usage", 503: "ChatGPT plan routing is unavailable"})
             # Do not echo provider bodies or request headers into logs.
             raise ModelError(f"OpenAI HTTP {e.code}. {hints.get(e.code, 'Check API service status')}. "
                              f"Request ID: {e.headers.get('x-request-id', 'unavailable')}. No automatic retry.") from None
@@ -192,11 +203,85 @@ class OpenAIClient:
         return self._send("responses", body)
 
 
+def read_stream(reply):
+    """Read through the terminal SSE event; never expose reasoning deltas."""
+    data, size = [], 0
+    for raw in reply:
+        size += len(raw)
+        if len(raw) > 4_000_000 or size > 64_000_000:
+            raise ModelError("Response stream exceeded the local size limit; usage is unconfirmed")
+        line = raw.decode("utf-8").rstrip("\r\n")
+        if line.startswith("data:"):
+            data.append(line[5:].lstrip())
+        elif not line and data:
+            event = json.loads("\n".join(data)); data = []
+            kind = event.get("type")
+            if kind in ("response.completed", "response.failed", "response.incomplete"):
+                response = event.get("response")
+                if not isinstance(response, dict):
+                    raise ModelError("Response stream returned no terminal response")
+                return response
+            if kind == "error":
+                code = event.get("code", "unknown_error")
+                safe = code if isinstance(code, str) and re.fullmatch(r"[a-zA-Z0-9_]{1,100}", code) else "unknown_error"
+                raise ModelError(f"ChatGPT stream error: {safe}. Check ChatGPT Settings > Usage. No automatic retry or API billing fallback.")
+    raise ModelError("ChatGPT stream ended before a terminal response; usage is unconfirmed. No retry was sent.")
+
+
+class PlanClient(OpenAIClient):
+    billing_mode = "chatgpt"
+
+    def __init__(self, store=None, timeout=120):
+        from .auth import AuthStore
+        self.store = store or AuthStore()
+        self.client_id, self.key = self.store.access_token()
+        self.timeout = timeout
+        self.opener = request.build_opener(NoRedirect)
+
+    def check(self):
+        self.client_id, self.key = self.store.access_token(self.client_id)
+        value = self._send("models")
+        models = value.get("models", [])
+        if not any(m.get("slug") == MODEL and m.get("visibility") == "list" for m in models):
+            raise ModelError("This ChatGPT account does not offer gpt-6.1-sol. No replacement model or paid API fallback was selected.")
+        return MODEL
+
+    def generate(self, body):
+        self.client_id, self.key = self.store.access_token(self.client_id)
+        body = {k: v for k, v in body.items() if k not in ("max_output_tokens", "service_tier")}
+        body.update(store=False, stream=True)
+        req = request.Request("https://api.openai.com/v1/responses", data=json.dumps(body).encode(),
+                              headers={"Authorization": "Bearer " + self.key, "Content-Type": "application/json",
+                                       "Accept": "text/event-stream", "User-Agent": "gpt64/0.3"})
+        try:
+            with self.opener.open(req, timeout=self.timeout) as reply:
+                result = read_stream(reply)
+                result["_request_id"] = reply.headers.get("x-request-id")
+                return result
+        except error.HTTPError as exc:
+            code, shape = "unknown_error", "unknown"
+            try:
+                body = json.loads(exc.read(8192))
+                shape = "error" if isinstance(body.get("error"), dict) else "detail" if "detail" in body else "other"
+                candidate = (body.get("error") or {}).get("code") if shape == "error" else None
+                if isinstance(candidate, str) and re.fullmatch(r"[a-zA-Z0-9_]{1,100}", candidate):
+                    code = candidate
+            except (ValueError, AttributeError):
+                pass
+            raise ModelError(f"ChatGPT HTTP {exc.code}; {shape} response; code {code}; request ID {exc.headers.get('x-request-id', 'unavailable')}. "
+                             "Check ChatGPT Settings > Usage or sign-in permissions. No retry or paid API fallback.") from None
+        except (error.URLError, TimeoutError, OSError, ValueError):
+            raise ModelError("ChatGPT stream failed or timed out; plan usage may have occurred. No retry or paid API fallback.") from None
+
+
 def parse_response(response):
     if response.get("model") != MODEL:
         raise ModelError("API returned an unexpected model; no fallback is allowed")
     if response.get("status") != "completed":
-        raise ModelError("Model response was incomplete or failed; no action was executed")
+        code = (response.get("error") or {}).get("code", "")
+        safe = code if isinstance(code, str) and re.fullmatch(r"[a-zA-Z0-9_]{1,100}", code) else ""
+        raise ModelError("Model response was incomplete or failed; no action was executed" +
+                         (f". Code: {safe}. For plan limits, open ChatGPT Settings > Usage" if safe else ""))
     texts = []
     for item in response.get("output", []):
         # Ignore reasoning items entirely. Only the public structured answer is used.

@@ -205,3 +205,32 @@ class RunnerTest(unittest.TestCase):
         c.start("Reach painting", max_steps=1)
         self.until(lambda: c.snapshot()["status"] == "limit_reached")
         self.assertEqual(len(self.bridge.actions), 1)
+
+    def test_chatgpt_plan_does_not_count_or_price_as_paid_api(self):
+        client = FakeClient()
+        client.check = lambda: MODEL
+        c = Controller(self.root / "bridge", self.root / "runs", billing="chatgpt",
+                       bridge_factory=lambda: self.bridge, client_factory=lambda: client)
+        self.controllers.append(c)
+        c.start("Reach painting", max_steps=1, budget_usd=0.001)
+        self.until(lambda: c.snapshot()["status"] == "limit_reached")
+        self.assertEqual(client.counts, 0)
+        self.assertEqual(client.generations, 1)
+        self.assertEqual(c.snapshot()["usage"]["estimated_usd"], 0)
+        self.assertEqual(c.snapshot()["usage"]["total_tokens"], 1100)
+        self.assertEqual(c.snapshot()["billing_mode"], "chatgpt")
+
+    def test_chatgpt_usage_limit_records_usage_and_never_falls_back(self):
+        reply = response(status="failed")
+        reply["error"] = {"code": "subscription_sharing_usage_limit_exceeded"}
+        client = FakeClient(reply)
+        client.check = lambda: MODEL
+        c = Controller(self.root / "bridge", self.root / "runs", billing="chatgpt",
+                       bridge_factory=lambda: self.bridge, client_factory=lambda: client)
+        self.controllers.append(c)
+        c.start("Reach painting")
+        self.until(lambda: c.snapshot()["status"] == "error")
+        self.assertEqual(client.generations, 1)
+        self.assertEqual(c.snapshot()["usage"]["total_tokens"], 1100)
+        self.assertIn("subscription_sharing_usage_limit_exceeded", c.snapshot()["error"])
+        self.assertEqual(self.bridge.actions, [])

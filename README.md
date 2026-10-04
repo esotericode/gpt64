@@ -7,7 +7,7 @@ It sees screenshots and its own executed inputs, selects a bounded input burst,
 and gives a public explanation of one or two sentences. BizHawk advances the
 requested frames and pauses while the next decision is made. No game RAM is read.
 
-**Status:** implementation and automated tests are in place. Live OpenAI access
+**Status:** implementation and automated tests are in place. Account-specific ChatGPT sign-in/inference, live API access
 and real BizHawk/Mario 64 gameplay still need validation on the game host.
 Successful autonomous gameplay has not yet been demonstrated.
 
@@ -25,16 +25,22 @@ Each run saves ongoing JSONL events, screenshots, API IDs/usage, and its last
 state. Commentary is a short public action summary; private reasoning content,
 API keys, request headers, and image base64 are excluded from the records.
 
-## Try the dashboard without setup
+## Download and start
 
-With Python 3.11+, from this repository:
+Download [main as a ZIP](https://github.com/esotericode/gpt64/archive/refs/heads/main.zip),
+extract it to `C:\gpt64\project`, and open [START-HERE.md](START-HERE.md).
+Install Python 3.11+, then run **setup-windows.cmd** once. Run **demo.cmd** to
+inspect the dashboard free of model usage, or **start.cmd** after connecting
+BizHawk. No npm build is required.
+
+Equivalent demo command, after setup:
 
 ```powershell
-py -m gpt64 serve --demo
+.\.venv\Scripts\python.exe -m gpt64 serve --demo
 ```
 
-Open `http://127.0.0.1:8765`. Demo mode shows a clearly labelled synthetic scene
-and scripted decisions; it uses no emulator, ROM, model, or API credits.
+Open `http://127.0.0.1:8765`. Demo mode is a clearly labelled synthetic scene
+with scripted decisions and no emulator, ROM, model allowance or credits.
 
 ## Run with Mario 64
 
@@ -42,29 +48,37 @@ Follow the complete [Windows setup guide](docs/windows.md). You need:
 
 1. Python 3.11+ and BizHawk 2.11.1 with its prerequisites.
 2. Your locally supplied Mario 64 ROM.
-3. An OpenAI Platform project API key with GPT-6.1 SOL access and API billing.
+3. An eligible ChatGPT account that grants plan usage and offers GPT-6.1 SOL,
+   or an explicitly configured, separately billed OpenAI API project.
 
-There is no ChatGPT sign-in inside gpt64. The local Python server reads
-`OPENAI_API_KEY`; the browser never receives it. No Python packages need to be
-installed when running from this checkout.
+**The default is Continue with ChatGPT.** Eligible Plus/Pro users can authorize
+local apps to use their plan or available credits. Account/model eligibility
+and shared allowance limits still apply. The dashboard provides an account
+picker, sign-in/sign-out, plan-use confirmation and a Manage usage link.
+It never switches to paid API billing or another model automatically.
 
-```powershell
-py -m gpt64 init
-# Load your ROM, pause BizHawk, then load the printed start.lua in Lua Console.
-py -m gpt64 doctor
-py -m gpt64 smoke
-# Set OPENAI_API_KEY locally as described in the setup guide.
-py -m gpt64 api-check
-py -m gpt64 serve
-```
-
-Open the dashboard, enter a goal, and begin with **One decision**. The model is
-fixed to `gpt-6.1-sol`; unavailable access stops with an error instead of silently
-selecting another model. Reasoning defaults to medium and is configurable:
+See [official local-app sign-in](https://developers.openai.com/siwc/quickstart).
+The complete guide includes exact folders, prerequisites, hidden local key
+entry for the optional API path, and troubleshooting. Credentials remain
+outside the checkout; Windows encrypts saved OAuth credentials with DPAPI.
 
 ```powershell
-py -m gpt64 serve --reasoning high
+.\.venv\Scripts\python.exe -m gpt64 init
+# Load your ROM, pause BizHawk, then open the printed start.lua in Lua Console.
+.\.venv\Scripts\python.exe -m gpt64 doctor
+.\.venv\Scripts\python.exe -m gpt64 smoke
+.\.venv\Scripts\python.exe -m gpt64 login
+.\.venv\Scripts\python.exe -m gpt64 api-check
+.\.venv\Scripts\python.exe -m gpt64 serve
 ```
+
+Or use start.cmd and Continue with ChatGPT in the dashboard. Enter a goal and
+begin with **One decision**. GPT-6.1 SOL is fixed; missing access stops the run.
+Reasoning defaults to medium (`serve --reasoning high` also works).
+See [what the agent is told on every turn](docs/agent.md).
+
+The API-key path is an explicit `--billing api` choice for both `api-check`
+and `serve`. Set `OPENAI_API_KEY` locally as described in the guide.
 
 ## Timing and cost
 
@@ -74,12 +88,19 @@ frames; each sequence has at most 16 segments and 240 frames. These are emulator
 ticks, not guaranteed distinct game renderings. Short actions help with camera
 movement, momentum, and landing corrections.
 
-Before each generation, the app counts input tokens and reserves a conservative
+In explicit API mode, before each generation the app counts input tokens and reserves a conservative
 standard-price estimate for the input and the 4,096-token output cap. A run
 stops before a request that exceeds its remaining estimated budget. Output usage
 includes reasoning tokens; they are displayed separately without charging twice.
 
-Rates are dated 2026-10-04. Dollar totals are estimates for this app's recorded
+In ChatGPT plan mode, the app records tokens without applying API dollar rates.
+Review remaining allowance, app access and credit limits in ChatGPT Settings >
+Usage. Plus's five-hour allowance is shared across participating apps.
+Plan requests stream to a terminal response; an interrupted stream cannot
+execute a partial action. The preview route does not accept an output-token
+cap, so use the 10-decision initial limit and your ChatGPT app limits.
+
+API rates are dated 2026-10-04. Dollar totals are estimates for this app's recorded
 calls, not your account balance or authoritative invoice. Regional premiums,
 price changes, other applications, and unknown request outcomes may change the
 actual bill. Use [OpenAI API usage](https://platform.openai.com/usage) to reconcile
@@ -113,11 +134,12 @@ budget accounting, and recovery behavior.
 ## Development
 
 ```powershell
-py -m unittest discover -s tests -v
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
 CI runs on Windows and Linux. Linux requires Lua 5.4 and executes the actual Lua
-bridge against a simulated BizHawk host. Agent tests mock OpenAI responses and
+bridge against a simulated BizHawk host. Authentication tests verify signed JWT claims, callback state/PKCE, refresh and
+protected credential storage. Agent tests mock OpenAI responses and
 verify pause/stop behavior, rejected actions, usage, budgets, and durable logs.
 HTTP tests exercise the dashboard demo, saved screenshots, and ZIP export.
 These tests do not replace real emulator/API validation.

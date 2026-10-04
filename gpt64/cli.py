@@ -53,18 +53,51 @@ def main(argv=None):
     dashboard.add_argument("--runs", type=Path, default=Path(".gpt64/runs"))
     dashboard.add_argument("--demo", action="store_true", help="Synthetic UI demo, no emulator or API requests")
     dashboard.add_argument("--reasoning", choices=("low", "medium", "high", "xhigh", "max"), default="medium")
-    commands.add_parser("api-check", help="Read-only check of local key and exact gpt-6.1-sol model access")
+    dashboard.add_argument("--billing", choices=("chatgpt", "api"), default="chatgpt", help="ChatGPT plan by default; paid API is an explicit choice")
+    check = commands.add_parser("api-check", help="Read-only check of exact gpt-6.1-sol access")
+    check.add_argument("--billing", choices=("chatgpt", "api"), default="chatgpt")
+    login = commands.add_parser("login", help="Continue with ChatGPT in your system browser")
+    login.add_argument("--new", action="store_true", help="Register another account/workspace")
+    login.add_argument("--enable-plan", action="store_true", help="Explicitly ask again for ChatGPT plan permission")
+    commands.add_parser("logout", help="Revoke the selected ChatGPT renewable session and clear its tokens")
+    commands.add_parser("accounts", help="Show saved ChatGPT account labels and IDs, never tokens")
+    account = commands.add_parser("account", help="Select a saved ChatGPT account")
+    account.add_argument("client_id")
+    commands.add_parser("instructions", help="Print the instructions the Mario agent receives each turn")
     args = parser.parse_args(argv)
     try:
+        if args.command == "instructions":
+            from .model import INSTRUCTIONS
+            print(INSTRUCTIONS)
+            return 0
+        if args.command in ("login", "logout", "accounts", "account"):
+            from .auth import AuthStore
+            store = AuthStore()
+            if args.command == "login":
+                print("Opening Continue with ChatGPT. Grant plan usage in the OpenAI browser page. Waiting up to 10 minutes.")
+                info = store.login(args.new, args.enable_plan)
+                print(f"Account: {info['label']}. ChatGPT plan use {'enabled' if info['ready'] else 'not granted'}. No inference was sent.")
+                if info["ready"]:
+                    print("You're using your ChatGPT plan. Manage usage and app credit limits in ChatGPT Settings > Usage.")
+                    store.acknowledge()
+            elif args.command == "logout":
+                print("Signed out." if store.logout() else "Signed out locally; remote revocation unconfirmed. Disconnect gpt64 in ChatGPT Settings.")
+            elif args.command == "account":
+                store.select(args.client_id)
+                print(store.public()["label"])
+            else:
+                print(json.dumps(store.public(), indent=2))
+            return 0
         if args.command == "api-check":
-            from .model import OpenAIClient
-            print(f"API model access verified: {OpenAIClient().check()}. No generation request was sent.")
+            from .model import OpenAIClient, PlanClient
+            client = PlanClient() if args.billing == "chatgpt" else OpenAIClient()
+            print(f"{args.billing} model access verified: {client.check()}. No generation request was sent.")
             return 0
         if args.command == "serve":
             from .server import serve
             if not 0 <= args.port <= 65535:
                 raise ValueError("Port must be between 0 and 65535")
-            serve(args.bridge, args.runs, args.port, args.demo, args.reasoning)
+            serve(args.bridge, args.runs, args.port, args.demo, args.reasoning, args.billing)
             return 0
         if args.command == "init":
             print(f"Open this script in BizHawk's Lua Console:\n{initialize(args.bridge, args.reset)}")

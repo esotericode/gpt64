@@ -109,6 +109,8 @@ def make_server(controller, port=8765):
                     controller.stop()
                 elif path == "/api/observe":
                     controller.observe()
+                elif path in ("/api/auth/login", "/api/auth/logout", "/api/auth/select", "/api/auth/ack"):
+                    controller.account_action(path.rsplit("/", 1)[1], data.get("account"), data.get("new") is True, data.get("enable_plan") is True)
                 else:
                     return self.reply(404, {"error": "Not found"})
                 return self.reply(200, {"ok": True})
@@ -118,11 +120,11 @@ def make_server(controller, port=8765):
     return ThreadingHTTPServer(("127.0.0.1", port), Handler)
 
 
-def serve(bridge_root, runs_root, port=8765, demo=False, effort="medium"):
-    controller = Controller(bridge_root, runs_root, demo=demo, effort=effort)
+def serve(bridge_root, runs_root, port=8765, demo=False, effort="medium", billing="chatgpt"):
+    controller = Controller(bridge_root, runs_root, demo=demo, effort=effort, billing=billing)
     server = make_server(controller, port)
     print(f"gpt64 dashboard: http://127.0.0.1:{server.server_port}")
-    print("Demo: synthetic scene, no emulator or API calls." if demo else "Model: gpt-6.1-sol. Open the dashboard to observe or start a run.")
+    print("Demo: synthetic scene, no emulator or API calls." if demo else f"Model: gpt-6.1-sol. Billing: {billing}. Open the dashboard to observe or start a run.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

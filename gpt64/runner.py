@@ -15,7 +15,7 @@ import struct
 
 from .actions import Segment
 from .bridge import Bridge, BridgeError, Observation, atomic_json
-from .model import (MODEL, PRICING_DATE, RATES, Decision, ModelError, OpenAIClient,
+from .model import (MODEL, PRICING_DATE, RATES, Decision, ModelError, OpenAIClient, PlanClient,
                     parse_response, payload, reserve_cost, usage_summary)
 
 
@@ -44,13 +44,20 @@ class RunLog:
 
 class Controller:
     def __init__(self, bridge_root, runs_root, demo=False, effort="medium",
-                 bridge_factory=None, client_factory=None):
+                 bridge_factory=None, client_factory=None, billing="api", auth_store=None):
         self.bridge_root = Path(bridge_root).resolve()
         self.runs_root = Path(runs_root).resolve()
         self.runs_root.mkdir(parents=True, exist_ok=True)
         self.demo, self.effort = demo, effort
+        if billing not in ("api", "chatgpt"):
+            raise ValueError("Choose api or chatgpt billing")
+        self.billing = billing
+        from .auth import AuthStore
+        self.auth_store = auth_store or AuthStore()
+        self.auth_worker = None
+        self.auth_status, self.auth_error = "idle", None
         self.bridge_factory = bridge_factory or (lambda: DemoBridge(self.runs_root / "preview") if demo else Bridge(self.bridge_root))
-        self.client_factory = client_factory or OpenAIClient
+        self.client_factory = client_factory or (lambda: PlanClient(self.auth_store) if billing == "chatgpt" else OpenAIClient())
         self.condition = threading.Condition(threading.RLock())
         self.worker = None
         self.log = None
@@ -73,7 +80,44 @@ class Controller:
 
     def snapshot(self):
         with self.condition:
-            return json.loads(json.dumps(self.state))
+            state = json.loads(json.dumps(self.state))
+            state["billing_mode"] = "demo" if self.demo else self.billing
+            if self.billing == "chatgpt" and not self.demo:
+                try:
+                    state["auth"] = self.auth_store.public()
+                except ModelError as exc:
+                    state["auth"] = {"ready": False, "accounts": [], "label": "Credential error", "active": None, "welcome": False}
+                    state["auth_error"] = str(exc)
+            state["auth_status"] = self.auth_status
+            state["auth_error"] = state.get("auth_error") or self.auth_error
+            return state
+
+    def account_action(self, action, account=None, new=False, enable_plan=False):
+        with self.condition:
+            if self.demo or self.billing != "chatgpt":
+                raise ValueError("ChatGPT sign-in is available in ChatGPT plan mode")
+            if (self.worker and self.worker.is_alive()) or (self.auth_worker and self.auth_worker.is_alive()):
+                raise ValueError("Stop the active work before changing ChatGPT accounts")
+            if action == "ack":
+                self.auth_store.acknowledge()
+            elif action == "select":
+                self.auth_store.select(account)
+            elif action in ("login", "logout"):
+                self.auth_status, self.auth_error = "signing_in" if action == "login" else "signing_out", None
+                def work():
+                    try:
+                        if action == "login":
+                            self.auth_store.login(new=new, enable_plan=enable_plan)
+                        elif not self.auth_store.logout():
+                            raise ModelError("Signed out locally; remote revocation was not confirmed. Disconnect gpt64 in ChatGPT Settings.")
+                    except Exception as exc:
+                        self.auth_error = str(exc) if isinstance(exc, ModelError) else "ChatGPT authentication failed locally"
+                    finally:
+                        self.auth_status = "idle"
+                self.auth_worker = threading.Thread(target=work, daemon=True)
+                self.auth_worker.start()
+            else:
+                raise ValueError("Unknown account action")
 
     def _update(self, **data):
         with self.condition:
@@ -102,17 +146,19 @@ class Controller:
                 self.continuous, self.permits = continuous, 0 if continuous else 1
                 self.condition.notify_all()
                 return
+            if self.auth_worker and self.auth_worker.is_alive():
+                raise ValueError("Wait for ChatGPT sign-in to finish")
             # Validate credentials before creating a live run. Never include them in state/logs.
             client = None if self.demo else self.client_factory()
             self.log = RunLog(self.runs_root / uuid.uuid4().hex)
             self.state = self.initial_state()
             self._update(run_id=self.log.directory.name, goal=goal.strip(), max_steps=max_steps,
-                         budget_usd=float(budget_usd), status="starting")
+                         budget_usd=float(budget_usd), status="starting", billing_mode="demo" if self.demo else self.billing)
             self.images, self.history, self.memory = [], [], ""
             self.stopping = False
             self.continuous, self.permits = continuous, 0 if continuous else 1
             self._event("run_started", model=MODEL, demo=self.demo, goal=goal.strip(),
-                        max_steps=max_steps, budget_usd=budget_usd, pricing_date=PRICING_DATE)
+                        max_steps=max_steps, budget_usd=budget_usd, pricing_date=PRICING_DATE, billing_mode=self.state["billing_mode"])
             self.worker = threading.Thread(target=self._run, args=(client,), daemon=True)
             self.worker.start()
 
@@ -191,6 +237,10 @@ class Controller:
 
     def _run(self, client):
         try:
+            plan = not self.demo and self.billing == "chatgpt"
+            if plan:
+                self._update(status="checking_access")
+                client.check()
             with self.bridge_factory() as bridge:
                 self._update(status="observing")
                 self._capture(bridge.observe())
@@ -208,24 +258,29 @@ class Controller:
                         self._update(decisions=self.state["decisions"] + 1, latency_seconds=0.35)
                     else:
                         body = payload(self.state["goal"], self.images, self.history, self.memory, self.effort)
-                        self._update(status="counting_tokens")
-                        tokens = client.count(body)
-                        reserve = reserve_cost(tokens)
-                        self._event("input_counted", input_tokens=tokens, maximum_standard_estimate_usd=reserve)
-                        if self.state["usage"]["estimated_usd"] + reserve > self.state["budget_usd"]:
-                            self._update(status="budget_reached")
-                            self._event("budget_reached", next_request_reserve_usd=reserve)
-                            return
+                        tokens, reserve = None, 0
+                        if not plan:
+                            self._update(status="counting_tokens")
+                            tokens = client.count(body)
+                            reserve = reserve_cost(tokens)
+                            self._event("input_counted", input_tokens=tokens, maximum_standard_estimate_usd=reserve)
+                            if self.state["usage"]["estimated_usd"] + reserve > self.state["budget_usd"]:
+                                self._update(status="budget_reached")
+                                self._event("budget_reached", next_request_reserve_usd=reserve)
+                                return
                         if not self._permission():
                             break
                         # Persist the reservation before the billable request starts.
                         self._update(status="thinking", reserved_usd=reserve, usage_unknown=True)
                         turn = self.state["decisions"] + 1
                         self._event("api_request_started", turn=turn, model=MODEL, input_tokens=tokens,
-                                    max_output_tokens=body["max_output_tokens"], screenshots=[p.name for p in self.images[-4:]])
+                                    max_output_tokens=None if plan else body["max_output_tokens"], billing_mode=self.billing,
+                                    screenshots=[p.name for p in self.images[-4:]])
                         started = time.monotonic()
                         response = client.generate(body)
                         usage = usage_summary(response)
+                        if plan:
+                            usage["estimated_usd"] = 0  # API price rates do not price ChatGPT plan/credit usage.
                         totals = {k: self.state["usage"][k] + usage[k] for k in usage}
                         latency = time.monotonic() - started
                         self._update(usage=totals, reserved_usd=0, usage_unknown=False, decisions=turn, latency_seconds=latency)
@@ -234,10 +289,10 @@ class Controller:
                         meta = {"id": response.get("id"), "request_id": response.get("_request_id"),
                                 "model": response.get("model"), "status": response.get("status"),
                                 "service_tier": response.get("service_tier"), "usage": usage,
-                                "latency_seconds": latency}
+                                "latency_seconds": latency, "billing_mode": self.billing}
                         atomic_json(self.log.directory / "api" / f"{turn:04d}.json", meta)
                         self._event("api_request_finished", **meta)
-                        if response.get("service_tier", "default") != "default":
+                        if not plan and response.get("service_tier", "default") != "default":
                             self._update(usage_unknown=True)
                             raise ModelError("API used an unexpected service tier; cost estimate needs billing verification")
                         decision = parse_response(response)

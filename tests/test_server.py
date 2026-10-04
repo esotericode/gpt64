@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import Mock
 from urllib import request, error
 import zipfile
 
@@ -68,3 +69,17 @@ class ServerTest(unittest.TestCase):
         with self.assertRaises(error.HTTPError) as failure:
             self.send("/api/runs/../../.env")
         self.assertEqual(failure.exception.code, 404)
+
+    def test_plan_account_state_is_public_and_controls_require_token(self):
+        store = Mock()
+        store.public.return_value = {"ready": True, "label": "Test account", "accounts": [], "active": "test", "welcome": True}
+        self.controller.demo = False
+        self.controller.billing = "chatgpt"
+        self.controller.auth_store = store
+        state = json.load(self.send("/api/state"))
+        self.assertEqual(state["auth"]["label"], "Test account")
+        self.assertNotIn("access_token", json.dumps(state))
+        with self.assertRaises(error.HTTPError):
+            self.send("/api/auth/ack", {})
+        self.send("/api/auth/ack", {}, {"X-Gpt64-Control": state["control_token"]}).close()
+        store.acknowledge.assert_called_once()
