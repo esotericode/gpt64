@@ -48,8 +48,24 @@ def main(argv=None):
     step.add_argument("--button", action="append", choices=BUTTONS, default=[])
     sequence = commands.add_parser("sequence", help="Execute a JSON array of controller segments")
     sequence.add_argument("file", type=Path)
+    dashboard = commands.add_parser("serve", help="Open the local observer dashboard and vision agent")
+    dashboard.add_argument("--port", type=int, default=8765)
+    dashboard.add_argument("--runs", type=Path, default=Path(".gpt64/runs"))
+    dashboard.add_argument("--demo", action="store_true", help="Synthetic UI demo, no emulator or API requests")
+    dashboard.add_argument("--reasoning", choices=("low", "medium", "high", "xhigh", "max"), default="medium")
+    commands.add_parser("api-check", help="Read-only check of local key and exact gpt-6.1-sol model access")
     args = parser.parse_args(argv)
     try:
+        if args.command == "api-check":
+            from .model import OpenAIClient
+            print(f"API model access verified: {OpenAIClient().check()}. No generation request was sent.")
+            return 0
+        if args.command == "serve":
+            from .server import serve
+            if not 0 <= args.port <= 65535:
+                raise ValueError("Port must be between 0 and 65535")
+            serve(args.bridge, args.runs, args.port, args.demo, args.reasoning)
+            return 0
         if args.command == "init":
             print(f"Open this script in BizHawk's Lua Console:\n{initialize(args.bridge, args.reset)}")
             return 0
@@ -86,6 +102,6 @@ def main(argv=None):
                 if args.command == "doctor":
                     print(f"N64 bridge ready; buttons: {', '.join(bridge.ready['buttons'])}")
         return 0
-    except (BridgeError, ValueError, TypeError, OSError) as e:
+    except (RuntimeError, ValueError, TypeError, OSError) as e:
         print(f"gpt64: {e}")
         return 1

@@ -1,78 +1,114 @@
 # gpt64
 
-A vision-only, turn-based control harness for Super Mario 64 in BizHawk on Windows.
+A vision-only Mario 64 agent and local observer dashboard for BizHawk on Windows.
 
-**Status:** the first emulator bridge is implemented. Python and Lua contract tests
-run without a ROM. Real BizHawk + Mario 64 validation is still required; this is
-not yet an autonomous Mario player.
+The agent uses **GPT-6.1 SOL (`gpt-6.1-sol`)** through the OpenAI Responses API.
+It sees screenshots and its own executed inputs, selects a bounded input burst,
+and gives a public explanation of one or two sentences. BizHawk advances the
+requested frames and pauses while the next decision is made. No game RAM is read.
 
-## Recommended approach
+**Status:** implementation and automated tests are in place. Live OpenAI access
+and real BizHawk/Mario 64 gameplay still need validation on the game host.
+Successful autonomous gameplay has not yet been demonstrated.
 
-Use Python for the agent and BizHawk Lua for the emulator. The emulator stays
-paused while the agent thinks. Each action holds an analog stick position and a
-set of buttons for an exact number of **emulator frames**, then pauses and takes
-a PNG screenshot. These are N64 emulation frames, not necessarily distinct game
-renderings; measure the host's frame rate before interpreting durations as seconds.
+## What you can see
 
-The eventual agent receives only screenshots, its own action history, and notes
-it wrote from those observations. The bridge does not read RAM, coordinates,
-collision state, or other hidden game data. Frame counters and controller names
-are harness diagnostics, not agent observations.
+- Latest game screenshot, brief agent commentary, analog position, button chords,
+  frame durations, and the decision/execution timeline.
+- Connecting, observing, counting tokens, thinking, acting, paused, stopping,
+  completion, limits, and actionable error states.
+- Returned input/output/cached/cache-write/reasoning token counts, estimated cost,
+  request latency, pending request reservation, and decision/action totals.
+- Start, One decision, Pause, Stop, Observe, saved run inspection, and ZIP export.
 
-## Start on Windows
+Each run saves ongoing JSONL events, screenshots, API IDs/usage, and its last
+state. Commentary is a short public action summary; private reasoning content,
+API keys, request headers, and image base64 are excluded from the records.
 
-Install Python 3.11+ and [BizHawk 2.11.1](https://github.com/TASEmulators/BizHawk/releases/tag/2.11.1)
-with its listed prerequisites. Supply your own Mario 64 ROM locally.
+## Try the dashboard without setup
 
-In PowerShell, from this repository:
+With Python 3.11+, from this repository:
+
+```powershell
+py -m gpt64 serve --demo
+```
+
+Open `http://127.0.0.1:8765`. Demo mode shows a clearly labelled synthetic scene
+and scripted decisions; it uses no emulator, ROM, model, or API credits.
+
+## Run with Mario 64
+
+Follow the complete [Windows setup guide](docs/windows.md). You need:
+
+1. Python 3.11+ and BizHawk 2.11.1 with its prerequisites.
+2. Your locally supplied Mario 64 ROM.
+3. An OpenAI Platform project API key with GPT-6.1 SOL access and API billing.
+
+There is no ChatGPT sign-in inside gpt64. The local Python server reads
+`OPENAI_API_KEY`; the browser never receives it. No Python packages need to be
+installed when running from this checkout.
 
 ```powershell
 py -m gpt64 init
+# Load your ROM, pause BizHawk, then load the printed start.lua in Lua Console.
+py -m gpt64 doctor
+py -m gpt64 smoke
+# Set OPENAI_API_KEY locally as described in the setup guide.
+py -m gpt64 api-check
+py -m gpt64 serve
 ```
 
-Open your ROM in BizHawk, pause it, and open **Tools > Lua Console**. Open the
-`start.lua` file printed by `init`. Leave the script enabled. The Lua Console
-should print `gpt64 bridge ready`. Avoid other Lua scripts, movies, autoholds,
-rewind, or manual input during a run.
+Open the dashboard, enter a goal, and begin with **One decision**. The model is
+fixed to `gpt-6.1-sol`; unavailable access stops with an error instead of silently
+selecting another model. Reasoning defaults to medium and is configurable:
 
 ```powershell
-py -m gpt64 doctor
-py -m gpt64 observe
-py -m gpt64 smoke
-py -m gpt64 step --x 0 --y 0.6 --frames 12
-py -m gpt64 step --button A --frames 4
-py -m gpt64 sequence examples\jump.json
+py -m gpt64 serve --reasoning high
 ```
 
-Screenshots and action logs go into `.gpt64/bridge/`. There are no Python
-dependencies, model credentials, or API charges for this first milestone.
-`smoke` advances 30 neutral frames and checks that time does not pass between
-requests. Use it from a harmless starting screen.
+## Timing and cost
 
-`x` and `y` are normalized values in [-1, 1]. Positive x is stick right;
-positive y is stick up. This is a controller direction, not an absolute world
-direction: Mario moves relative to the game's camera. A value of 1 maps to 80
-N64 stick units, a conservative practical range.
+The screen updates after observations/actions; this is a screenshot-based
+turn-taking player, not a continuous video stream. Each segment is 1–120 emulator
+frames; each sequence has at most 16 segments and 240 frames. These are emulator
+ticks, not guaranteed distinct game renderings. Short actions help with camera
+movement, momentum, and landing corrections.
 
-Each segment is 1–120 frames, and a sequence is at most 16 segments and 240
-frames in total. Start with 6–15 frame actions around obstacles. A sequence can
-express press/release timing, such as holding A briefly, then releasing it while
-continuing forward. No default action macros claim to have been calibrated in
-the game yet.
+Before each generation, the app counts input tokens and reserves a conservative
+standard-price estimate for the input and the 4,096-token output cap. A run
+stops before a request that exceeds its remaining estimated budget. Output usage
+includes reasoning tokens; they are displayed separately without charging twice.
 
-## Build order
+Rates are dated 2026-10-04. Dollar totals are estimates for this app's recorded
+calls, not your account balance or authoritative invoice. Regional premiums,
+price changes, other applications, and unknown request outcomes may change the
+actual bill. Use [OpenAI API usage](https://platform.openai.com/usage) to reconcile
+charges. Limits apply per run; starting another run creates a fresh budget.
 
-1. **Validate the bridge in real BizHawk.** Exact frame counts, frozen idle time,
-   live screenshots, analog movement, jump press/release, and camera buttons.
-2. **Calibrate control from screenshots.** Compare before/after movement and
-   jumps. Save a repeatable starting state locally for debugging.
-3. **Add the vision agent.** A configurable model, structured action output,
-   recent screenshots, compact notes, bounded actions, and step/token budgets.
-   The agent should stop and re-observe when uncertain.
-4. **Attempt one task.** First enter Bob-omb Battlefield; then attempt one star.
-   Add longer runs and an observer dashboard after a reliable short run.
+Pause holds the next action, including one selected by an in-flight response.
+Resume uses that pending decision without another generation request. Stop
+discards the pending decision once in-flight work finishes. Neither operation
+can undo API usage or a controller burst already in progress. No failed API or
+emulator action is retried automatically.
 
-See [architecture](docs/architecture.md) and [Windows validation](docs/windows.md).
+## Logs and troubleshooting
+
+Default locations:
+
+| Location | Contents |
+| --- | --- |
+| `.gpt64/bridge/` | Lua launcher, mailbox state, low-level screenshots/actions |
+| `.gpt64/runs/<run-id>/events.jsonl` | Ongoing timestamped decisions, inputs, observations, usage, errors |
+| `.gpt64/runs/<run-id>/screens/` | Screenshots used in that run |
+| `.gpt64/runs/<run-id>/api/` | API response/request IDs, status, usage, latency |
+| `.gpt64/runs/<run-id>/state.json` | Last dashboard state and dated pricing |
+
+Use **Saved runs** to inspect old sessions and **Download run ZIP** for a
+troubleshooting bundle. Records persist locally until you remove them. They
+contain your goals and screenshots. No API key or ROM is included.
+
+See [architecture](docs/architecture.md) for the protocol, model boundary,
+budget accounting, and recovery behavior.
 
 ## Development
 
@@ -80,9 +116,10 @@ See [architecture](docs/architecture.md) and [Windows validation](docs/windows.m
 py -m unittest discover -s tests -v
 ```
 
-On Linux with `liblua5.4`, the suite also executes the actual Lua bridge against
-a simulated BizHawk host. CI requires those Lua tests. This verifies the
-protocol and frame-control logic, not N64 rendering or actual Mario gameplay.
+CI runs on Windows and Linux. Linux requires Lua 5.4 and executes the actual Lua
+bridge against a simulated BizHawk host. Agent tests mock OpenAI responses and
+verify pause/stop behavior, rejected actions, usage, budgets, and durable logs.
+HTTP tests exercise the dashboard demo, saved screenshots, and ZIP export.
+These tests do not replace real emulator/API validation.
 
-ROMs, emulator binaries, save states, local logs, and credentials are excluded
-from git.
+ROMs, emulator binaries, save states, logs, and credentials are excluded from git.

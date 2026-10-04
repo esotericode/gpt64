@@ -106,13 +106,17 @@ class LuaIntegrationTest(unittest.TestCase):
         with Bridge(self.root, timeout=2) as bridge:
             action = bridge.step([Segment(2)])
             wire = f"GPT64 1\n{bridge.ready['session']}\n{action.request_id}\n1\n2 0 0 0\n"
-            (self.root / "request.txt").write_text(wire)
+            packet = self.root / "request.tmp"
+            packet.write_text(wire)
+            packet.replace(self.root / "request.txt")
             time.sleep(0.03)
             self.assertEqual(bridge.observe().frame_after, 102)
         self.assertEqual(len((self.root / "inputs.log").read_text().splitlines()), 2)
 
     def test_stale_session_never_executes(self):
-        (self.root / "request.txt").write_text("GPT64 1\nold-session\n" + "a" * 32 + "\n1\n30 0 0 1\n")
+        packet = self.root / "request.tmp"
+        packet.write_text("GPT64 1\nold-session\n" + "a" * 32 + "\n1\n30 0 0 1\n")
+        packet.replace(self.root / "request.txt")
         deadline = time.monotonic() + 1
         while (self.root / "ready.json").exists() and time.monotonic() < deadline:
             time.sleep(0.005)
@@ -122,7 +126,9 @@ class LuaIntegrationTest(unittest.TestCase):
 
     def test_lua_rejects_out_of_bounds_wire_action(self):
         session = json.loads((self.root / "ready.json").read_text())["session"]
-        (self.root / "request.txt").write_text(f"GPT64 1\n{session}\n" + "b" * 32 + "\n1\n121 0 0 1\n")
+        packet = self.root / "request.tmp"
+        packet.write_text(f"GPT64 1\n{session}\n" + "b" * 32 + "\n1\n121 0 0 1\n")
+        packet.replace(self.root / "request.txt")
         deadline = time.monotonic() + 1
         while (self.root / "ready.json").exists() and time.monotonic() < deadline:
             time.sleep(0.005)

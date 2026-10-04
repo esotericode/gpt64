@@ -18,7 +18,16 @@ class BridgeError(RuntimeError):
 def atomic_json(path: Path, value):
     temporary = path.with_name(path.name + ".tmp")
     temporary.write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
-    temporary.replace(path)
+    # A short-lived Windows reader can temporarily deny replacement. Retrying
+    # metadata publication is safe; this never resends an emulator/API action.
+    for attempt in range(10):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            if attempt == 9:
+                raise
+            time.sleep(0.02)
 
 
 @dataclass(frozen=True)
