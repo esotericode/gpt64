@@ -127,12 +127,28 @@ Default Windows locations (under `%LOCALAPPDATA%/gpt64/data`):
 | `bridge/` | Lua launcher, mailbox state, low-level screenshots/actions |
 | `runs/<run-id>/events.jsonl` | Ongoing timestamped decisions, inputs, observations, usage, errors |
 | `runs/<run-id>/screens/` | Screenshots used in that run |
-| `runs/<run-id>/api/` | API response/request IDs, status, usage, latency |
+| `runs/<run-id>/api/` | API response/request IDs, status, usage, latency, answer diagnostics |
 | `runs/<run-id>/state.json` | Last dashboard state and dated pricing |
 
 Use **Saved runs** to inspect old sessions and **Download run ZIP** for a
 troubleshooting bundle. Records persist locally until you remove them. They
-contain your goals and screenshots. No API key or ROM is included.
+contain your goals, screenshots, and public final answers (up to 16,384 characters
+per response). No API key, ROM, or private reasoning is included.
+
+**“Model response was not a valid structured decision” in 0.4.0 or earlier:** the
+parser could accidentally join an intermediate commentary message to the final
+JSON answer. Version 0.4.1 fixes that reproducible bug by selecting one final
+answer and ignoring other explicit message phases. The old generic error also
+covered empty or invalid JSON; old records do not contain the rejected answer,
+so they cannot establish which cause occurred on your machine.
+
+After upgrading, use **One decision** with the same selected model. If it stops,
+download that run ZIP and share it along with the model ID and connection mode.
+`api/0001.json` (or the failing turn's number) now includes `diagnostics` with
+message types/phases, the public answer, returned format, and a specific
+`parse_error` code/message. Missing answers, malformed JSON, refusals, ambiguous
+answers and rejected inputs stay stopped. Usage is recorded when returned;
+there is no automatic repair request, retry, model switch, or paid fallback.
 
 See [architecture](docs/architecture.md) for the protocol, model boundary,
 budget accounting, and recovery behavior.

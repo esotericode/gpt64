@@ -16,7 +16,8 @@ import struct
 from .actions import Segment
 from .bridge import Bridge, BridgeError, Observation, atomic_json
 from .model import (MODEL, MODEL_RATES, PRICING_DATE, Decision, ModelError, OpenAIClient, PlanClient,
-                    model_id, model_rates, parse_response, payload, reserve_cost, response_model_matches, usage_summary)
+                    model_id, model_rates, parse_response, payload, reserve_cost, response_diagnostics,
+                    response_model_matches, usage_summary)
 
 
 def now():
@@ -419,12 +420,21 @@ class Controller:
                                 "model": response.get("model"), "status": response.get("status"),
                                 "service_tier": response.get("service_tier"), "usage": usage,
                                 "latency_seconds": latency, "billing_mode": self.billing}
-                        atomic_json(self.log.directory / "api" / f"{turn:04d}.json", meta)
+                        record = {**meta, "diagnostics": response_diagnostics(response, self.model)}
+                        record_path = self.log.directory / "api" / f"{turn:04d}.json"
+                        atomic_json(record_path, record)
                         self._event("api_request_finished", **meta)
                         if not plan and (response.get("service_tier", "default") != "default" or not response_model_matches(response.get("model"), self.model)):
                             self._update(usage_unknown=True)
                             raise ModelError("API used an unexpected model or service tier; cost estimate needs billing verification")
-                        decision = parse_response(response, self.model)
+                        try:
+                            decision = parse_response(response, self.model)
+                        except ModelError as exc:
+                            record["parse_error"] = {"code": getattr(exc, "code", "invalid_decision"), "message": str(exc)}
+                            atomic_json(record_path, record)
+                            raise
+                        record["decision_valid"] = True
+                        atomic_json(record_path, record)
                     self._update(commentary=decision.commentary, segments=[asdict(s) for s in decision.segments], pending_decision=True)
                     self._event("decision", turn=self.state["decisions"], **decision.public())
                     # Give the observer a chance to display commentary before the
