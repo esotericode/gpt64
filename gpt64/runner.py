@@ -14,6 +14,7 @@ import zlib
 import struct
 
 from .actions import Segment
+from .scratchpad import Scratchpad
 from .bridge import Bridge, BridgeError, Observation, atomic_json
 from .model import (MODEL, MODEL_RATES, PRICING_DATE, Decision, ModelError, OpenAIClient, PlanClient,
                     model_id, model_rates, parse_response, payload, reserve_cost, response_diagnostics,
@@ -51,6 +52,10 @@ class Controller:
         self.runs_root.mkdir(parents=True, exist_ok=True)
         self.demo, self.effort = demo, effort
         self.settings = settings
+        self.scratchpad = Scratchpad((settings.directory if settings else self.runs_root.parent) /
+                                    ("scratchpad-demo" if demo else "scratchpad"))
+        self.scratchpad_query = ""
+        self.scratchpad_offset = 0
         self.preferences = settings.load() if settings else {"model": MODEL, "goal": "", "max_steps": 10, "budget_usd": .25}
         self.model = model_id(model or self.preferences["model"])
         if billing not in ("api", "chatgpt", "claude"):
@@ -83,7 +88,9 @@ class Controller:
                 "segments": [], "image_url": None, "events": [], "error": None,
                 "latency_seconds": None, "updated": now(), "reasoning_effort": self.effort if self.model in MODEL_RATES else "provider default",
                 "pricing_date": PRICING_DATE, "rates_per_million": MODEL_RATES.get(self.model), "pending_decision": False,
-                "usage_available": self.billing != "claude", "observation_id": None}
+                "usage_available": self.billing != "claude", "observation_id": None,
+                "pause_seconds": 0, "pause_remaining_seconds": 0, "pause_until": None, "selected_frames": 0,
+                "working_memory": "", "scratchpad": self.scratchpad.context()}
 
     def snapshot(self):
         with self.condition:
@@ -206,6 +213,8 @@ class Controller:
             self._update(run_id=self.log.directory.name, goal=goal.strip(), max_steps=max_steps,
                          budget_usd=float(budget_usd), status="starting", billing_mode="demo" if self.demo else self.billing)
             self.images, self.history, self.memory = [], [], ""
+            self.scratchpad_query = ""
+            self.scratchpad_offset = 0
             self.external_proposal = None
             self.stopping = False
             self.continuous, self.permits = continuous, 0 if continuous else 1
@@ -240,9 +249,62 @@ class Controller:
     def _permission(self):
         with self.condition:
             while not self.stopping and not self.continuous and not self.permits:
-                self._update(status="paused")
+                self._update(status="paused", pause_until=None)
                 self.condition.wait()
             return not self.stopping
+
+    def _decision_wait(self, seconds):
+        """The AI chooses extra frozen time; user Pause suspends the countdown."""
+        remaining = seconds
+        with self.condition:
+            while remaining > 0 and not self.stopping:
+                if not self._permission():
+                    break
+                self._update(status="waiting", pause_remaining_seconds=remaining, pause_until=time.time() + remaining)
+                started = time.monotonic()
+                self.condition.wait(timeout=remaining)
+                remaining = max(0, remaining - (time.monotonic() - started))
+                self._update(pause_remaining_seconds=remaining)
+            self._update(pause_until=None, pause_remaining_seconds=0 if self.stopping else remaining)
+            return not self.stopping
+
+    def scratchpad_read(self, query="", offset=0):
+        return self.scratchpad.context(query, offset)
+
+    def scratchpad_append(self, text):
+        with self.condition:
+            entry = self.scratchpad.append(text, run_id=self.state["run_id"],
+                model="Chosen in Claude Code" if self.billing == "claude" else self.state["model"])
+            self._update(scratchpad=self.scratchpad.context(self.scratchpad_query, self.scratchpad_offset))
+            self._event("scratchpad_note", note_id=entry["id"], text=entry["text"])
+            return entry
+
+    def _remember(self, decision, turn=None):
+        self.scratchpad_query = decision.scratchpad_query
+        self.scratchpad_offset = decision.scratchpad_offset
+        if decision.scratchpad_note:
+            entry = self.scratchpad.append(decision.scratchpad_note,
+                key=f'{self.state["run_id"]}:{self.state["decisions"] if turn is None else turn}',
+                run_id=self.state["run_id"], model=self.state["model"])
+            self._event("scratchpad_note", note_id=entry["id"], text=entry["text"])
+        self._update(scratchpad=self.scratchpad.context(self.scratchpad_query, self.scratchpad_offset))
+        if self.scratchpad_query:
+            self._event("scratchpad_recall", query=self.scratchpad_query)
+
+    def _execute_decision(self, bridge, decision):
+        if decision.segments:
+            self._update(status="acting")
+            self._event("action_requested", segments=[asdict(s) for s in decision.segments])
+            result = bridge.step(decision.segments)
+            self.history.append([asdict(s) for s in decision.segments])
+        else:
+            self._update(status="observing")
+            result = bridge.observe()  # Notes/recall-only decisions advance zero frames.
+        self.memory = decision.memory
+        self._capture(result)
+        self._update(steps=self.state["steps"] + bool(decision.segments), pending_decision=False, working_memory=self.memory)
+        self._event("action_finished" if decision.segments else "notes_only_decision", request_id=result.request_id,
+                    advanced=result.advanced, frame_before=result.frame_before, frame_after=result.frame_after)
 
     def _capture(self, observation):
         with self.condition:
@@ -300,6 +362,7 @@ class Controller:
                     "goal": self.state["goal"], "status": self.state["status"], "pending_decision": self.state["pending_decision"],
                     "decisions": self.state["decisions"], "max_steps": self.state["max_steps"],
                     "memory": self.memory, "executed_actions": self.history[-8:],
+                    "scratchpad": self.scratchpad.context(self.scratchpad_query, self.scratchpad_offset),
                     "image": {"type": "image", "mimeType": "image/png", "data": base64.b64encode(self.images[-1].read_bytes()).decode()}}
 
     def external_decision(self, observation_id, value):
@@ -313,9 +376,11 @@ class Controller:
                 raise ValueError("A decision is already pending; do not resubmit it")
             if self.state["decisions"] >= self.state["max_steps"]:
                 raise ValueError("Decision limit reached; start a new run deliberately")
+            self._remember(decision, self.state["decisions"] + 1)
             self.external_proposal = decision
             self._update(commentary=decision.commentary, segments=[asdict(s) for s in decision.segments], pending_decision=True,
-                         decisions=self.state["decisions"] + 1)
+                         decisions=self.state["decisions"] + 1, pause_seconds=decision.pause_seconds,
+                         selected_frames=sum(s.frames for s in decision.segments))
             self._event("decision", turn=self.state["decisions"], **decision.public())
             self.condition.notify_all()
             return {"accepted": True, "status": "queued", "observation_id": observation_id,
@@ -337,23 +402,13 @@ class Controller:
                         if self.external_proposal is None:
                             continue
                         decision, self.external_proposal = self.external_proposal, None
-                        self.condition.wait(timeout=.35)
-                    if not self._permission():
+                    if not self._permission() or not self._decision_wait(decision.pause_seconds) or not self._permission():
                         break
                     if decision.done:
                         self._update(status="completed", pending_decision=False)
                         self._event("goal_completed", commentary=decision.commentary)
                         return
-                    self._update(status="acting")
-                    self._event("action_requested", segments=[asdict(s) for s in decision.segments])
-                    result = bridge.step(decision.segments)
-                    self.history.append([asdict(s) for s in decision.segments])
-                    self.memory = decision.memory
-                    # Capture first so an old observation cannot be submitted twice.
-                    self._capture(result)
-                    self._update(steps=self.state["steps"] + 1, pending_decision=False)
-                    self._event("action_finished", request_id=result.request_id, advanced=result.advanced,
-                                frame_before=result.frame_before, frame_after=result.frame_after)
+                    self._execute_decision(bridge, decision)
                     with self.condition:
                         if self.permits:
                             self.permits -= 1
@@ -388,7 +443,9 @@ class Controller:
                                             (Segment(8, 0.5, 0, ("A",) if self.state["decisions"] % 3 == 0 else ()),))
                         self._update(decisions=self.state["decisions"] + 1, latency_seconds=0.35)
                     else:
-                        body = payload(self.state["goal"], self.images, self.history, self.memory, self.effort, self.model)
+                        scratchpad = self.scratchpad.context(self.scratchpad_query, self.scratchpad_offset)
+                        body = payload(self.state["goal"], self.images, self.history, self.memory, self.effort, self.model,
+                                       scratchpad=scratchpad)
                         tokens, reserve = None, 0
                         if not plan:
                             self._update(status="counting_tokens")
@@ -420,7 +477,7 @@ class Controller:
                                 "model": response.get("model"), "status": response.get("status"),
                                 "service_tier": response.get("service_tier"), "usage": usage,
                                 "latency_seconds": latency, "billing_mode": self.billing}
-                        record = {**meta, "diagnostics": response_diagnostics(response, self.model)}
+                        record = {**meta, "diagnostics": response_diagnostics(response, self.model), "scratchpad_context": scratchpad}
                         record_path = self.log.directory / "api" / f"{turn:04d}.json"
                         atomic_json(record_path, record)
                         self._event("api_request_finished", **meta)
@@ -435,27 +492,17 @@ class Controller:
                             raise
                         record["decision_valid"] = True
                         atomic_json(record_path, record)
-                    self._update(commentary=decision.commentary, segments=[asdict(s) for s in decision.segments], pending_decision=True)
+                    self._update(commentary=decision.commentary, segments=[asdict(s) for s in decision.segments], pending_decision=True,
+                                 pause_seconds=decision.pause_seconds, selected_frames=sum(s.frames for s in decision.segments))
+                    self._remember(decision)
                     self._event("decision", turn=self.state["decisions"], **decision.public())
-                    # Give the observer a chance to display commentary before the
-                    # action starts. Pause/stop wakes this brief wait immediately.
-                    with self.condition:
-                        self.condition.wait(timeout=0.35)
-                    if not self._permission():
+                    if not self._permission() or not self._decision_wait(decision.pause_seconds) or not self._permission():
                         break
                     if decision.done:
                         self._update(status="completed", pending_decision=False)
                         self._event("goal_completed", commentary=decision.commentary)
                         return
-                    self._update(status="acting")
-                    self._event("action_requested", segments=[asdict(s) for s in decision.segments])
-                    result = bridge.step(decision.segments)
-                    self.history.append([asdict(s) for s in decision.segments])
-                    self.memory = decision.memory
-                    self._update(steps=self.state["steps"] + 1, pending_decision=False)
-                    self._event("action_finished", request_id=result.request_id, advanced=result.advanced,
-                                frame_before=result.frame_before, frame_after=result.frame_after)
-                    self._capture(result)
+                    self._execute_decision(bridge, decision)
                     with self.condition:
                         if self.permits:
                             self.permits -= 1

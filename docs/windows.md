@@ -202,6 +202,7 @@ files. In Claude mode, press Esc in Claude separately to interrupt its inference
 | API 401/403/404/429 | Check the locally entered key, permissions, chosen model and API credit/rate limits. |
 | Port occupied | Stop the old dashboard or use `serve --port 8766`. |
 | Pending action/client lock | Follow the reset procedure below; startup never silently clears it. |
+| Lua bridge timing limits are outdated | Close BizHawk and rerun the launcher so it loads the updated Lua script; no request was sent. |
 
 For an interrupted bridge or unconfirmed action, stop its Lua script (or close
 BizHawk) first. Then, with the runtime command from section 4:
@@ -220,6 +221,13 @@ ChatGPT settings, privately back up `%LOCALAPPDATA%\gpt64\accounts.dat`, and sig
 in again. Never share that backup. Normal sign-out retains the registration.
 
 ## Upgrading an existing installation
+
+For 0.5.0, stop the dashboard, close BizHawk and also close Claude Code if used.
+Replace the source folder and run the same launcher. Reopen Claude Code from the
+dashboard to load its new scratchpad tools. No new sign-in is required. New AI
+notes are stored in `%LOCALAPPDATA%\gpt64\data\scratchpad\notes.jsonl` and are
+kept across later replacements. AI timing & memory shows durations, notes and
+search/paging. Start run continues automatically; One decision stops after a turn.
 
 **From 0.3.x, once:** stop the old server and close BizHawk. Copy all new source
 files into the existing project folder. Leave the old `.gpt64` folder present

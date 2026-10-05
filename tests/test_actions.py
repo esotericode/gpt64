@@ -10,7 +10,7 @@ class ActionsTest(unittest.TestCase):
         self.assertEqual(Segment(1).wire(), "1 0 0 0")
 
     def test_reject_unsafe_values(self):
-        for args in ({"frames": 0}, {"frames": 121}, {"frames": True},
+        for args in ({"frames": 0}, {"frames": 601}, {"frames": True},
                      {"frames": 1, "x": math.nan}, {"frames": 1, "y": 1.1},
                      {"frames": 1, "x": True}, {"frames": 1, "buttons": ("Power",)},
                      {"frames": 1, "buttons": ("A", "A")}):
@@ -18,7 +18,7 @@ class ActionsTest(unittest.TestCase):
                 Segment(**args)
 
     def test_sequence_limits(self):
-        for segments in ([], [Segment(1)] * 17, [Segment(120)] * 3):
+        for segments in ([], [Segment(1)] * 33, [Segment(600)] * 4):
             with self.assertRaises(ValueError):
                 validate_sequence(segments)
         self.assertEqual(len(validate_sequence([Segment(120)] * 2)), 2)

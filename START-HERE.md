@@ -1,4 +1,4 @@
-# Start here: gpt64 0.4 on Windows
+# Start here: gpt64 0.5 on Windows
 
 1. Install Python 3.11+ with its Windows launcher. Download BizHawk 2.11.1,
    install its prerequisites, and keep its release folder intact. Keep your
@@ -20,7 +20,15 @@
 bridge or loads the ROM/Lua automatically. **demo.cmd** needs no emulator or
 account. **setup-windows.cmd** can provision the environment without starting.
 
-**Replacing files:** stop the dashboard and close BizHawk, then replace the
+**Autonomous play:** choose Start run to continue automatically. One decision
+intentionally stops after one model turn. The AI chooses hold/release durations,
+its next screenshot boundary and optional extra frozen time; inference/user Pause
+still keeps the game frozen. Expand AI timing & memory to inspect permanent notes,
+search older lessons or download the full scratchpad. Notes survive new runs,
+model/provider changes and replacement of the source folder.
+
+**Replacing files:** click Stop and wait for any current burst to finish, stop
+the dashboard server, and close BizHawk (and Claude Code if used), then replace the
 whole source folder and run start.cmd. Runtime, settings, logs and sign-in live
 outside that folder. You do not need to preserve individual source files.
 

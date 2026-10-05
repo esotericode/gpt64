@@ -3,6 +3,8 @@ let controlToken = '', live = null, archive = '', lastImage = '', busy = false, 
 let selectedModel = '', catalogSignature = '', catalogRequest = false, formInitialized = false;
 const terminal = new Set(['idle','error','stopped','completed','limit_reached','budget_reached']);
 const phaseNames = {idle:'Ready · emulator paused',observing:'Capturing a screenshot',starting:'Connecting to the emulator',checking_access:'Checking selected model catalog',counting_tokens:'Checking the next request budget',waiting_external:'Waiting for Claude · game paused',thinking:'Model thinking · game paused',acting:'Executing the input burst',paused:'Paused · next action held',stopping:'Stopping after in-flight work',stopped:'Stopped · emulator paused',completed:'Goal reported complete',limit_reached:'Decision limit reached',budget_reached:'Budget check stopped the run',error:'Run stopped with an error'};
+phaseNames.waiting='AI chose a frozen wait';
+let noteSearchResult=null;
 const fmt = n => Number(n || 0).toLocaleString();
 function text(id, value) { $(id).textContent = value; }
 function render(s) {
@@ -53,6 +55,15 @@ function render(s) {
   if (!s.segments.length) { const span = document.createElement('span'); span.className='pill muted'; span.textContent='No inputs'; $('inputs').append(span); }
   s.segments.forEach((seg,i) => { const span=document.createElement('span'); span.className='pill'; span.textContent=`${i+1}. ${seg.buttons.join(' + ') || 'neutral'} · (${seg.x}, ${seg.y}) · ${seg.frames}f`; $('inputs').append(span); });
   const stick = s.segments[0] || {x:0,y:0}; $('stickdot').setAttribute('cx',30+stick.x*20); $('stickdot').setAttribute('cy',30-stick.y*20); text('axis',`x ${stick.x} · y ${stick.y}`);
+  const remaining=s.pause_until ? Math.max(0,s.pause_until-Date.now()/1000) : s.pause_remaining_seconds || 0;
+  text('timing',`AI selected ${s.selected_frames || 0} emulator frames before the next screenshot, plus ${s.pause_seconds || 0}s of extra frozen time.${s.status==='waiting' ? ` ${remaining.toFixed(1)}s remaining.` : ''}`);
+  text('workingmemory',s.working_memory || 'No compact working notes yet.');
+  const notes=(!archive && noteSearchResult) || s.scratchpad || {entries:[],total_notes:0};
+  text('notecount',`${notes.total_notes} stored notes`);$('notes').replaceChildren();
+  if(!notes.entries.length){const p=document.createElement('p');p.className='hint';p.textContent='The AI can record lessons, failed attempts, routes and corrections here.';$('notes').append(p);}
+  notes.entries.forEach(note=>{const row=document.createElement('div');row.className='entry';const label=document.createElement('small');label.textContent=`${new Date(note.time).toLocaleString()} · ${note.model || 'AI note'}`;const p=document.createElement('p');p.textContent=note.text;row.append(label,p);$('notes').append(row);});
+  $('searchnotes').disabled=$('recentnotes').disabled=!!archive;
+  $('nextnotes').disabled=!!archive || notes.next_offset==null;
   const active = !terminal.has(s.status); const resumable = s.status==='paused';
   ['goal','budget','limit'].forEach(id => $(id).disabled=active || !!archive);
   $('claudepanel').hidden=live?.billing_mode!=='claude';$('modelfields').hidden=external;
@@ -74,10 +85,10 @@ function render(s) {
   if(auth.welcome && !archive && !$('welcome').open)$('welcome').showModal();
   $('export').hidden=$('events').hidden=!s.run_id;
   if(s.run_id){$('export').href=`/api/runs/${s.run_id}/export`; $('events').href=`/api/runs/${s.run_id}/events.jsonl`;}
-  const visible = s.events.filter(e => ['decision','action_finished','api_request_finished','error','run_started','budget_reached','goal_completed','run_stopped','pause_requested','stop_requested'].includes(e.event)).slice(-40).reverse();
+  const visible = s.events.filter(e => ['decision','action_finished','api_request_finished','error','run_started','budget_reached','goal_completed','run_stopped','pause_requested','stop_requested','scratchpad_note','scratchpad_recall','notes_only_decision'].includes(e.event)).slice(-40).reverse();
   $('timeline').replaceChildren();
   if(!visible.length){const p=document.createElement('p');p.className='placeholder';p.textContent='Commentary, inputs, usage, and errors will appear here.';$('timeline').append(p);}
-  visible.forEach(e=>{const row=document.createElement('div');row.className='entry';const head=document.createElement('div');head.className='entryhead';const title=document.createElement('b');title.textContent=e.event.replaceAll('_',' ');const time=document.createElement('span');time.textContent=new Date(e.time).toLocaleTimeString();head.append(title,time);row.append(head);const p=document.createElement('p');p.textContent=e.commentary || e.message || (e.event==='action_finished' ? `${e.advanced} frames confirmed. Controls released.` : e.event==='api_request_finished' ? `${fmt(e.usage.total_tokens)} tokens · ${e.billing_mode==='chatgpt' ? 'ChatGPT plan' : '$'+e.usage.estimated_usd.toFixed(5)} · ${e.latency_seconds.toFixed(1)} s` : e.goal || '');row.append(p);if(e.segments){const d=document.createElement('p');d.className='detail';d.textContent=e.segments.map(x=>`${x.buttons.join('+') || 'neutral'} (${x.x},${x.y}) ${x.frames}f`).join(' → ');row.append(d);} $('timeline').append(row);});
+  visible.forEach(e=>{const row=document.createElement('div');row.className='entry';const head=document.createElement('div');head.className='entryhead';const title=document.createElement('b');title.textContent=e.event.replaceAll('_',' ');const time=document.createElement('span');time.textContent=new Date(e.time).toLocaleTimeString();head.append(title,time);row.append(head);const p=document.createElement('p');p.textContent=e.commentary || e.message || e.text?.slice(0,180) || e.query || (e.event==='action_finished' ? `${e.advanced} frames confirmed. Controls released.` : e.event==='notes_only_decision' ? 'Notes/recall completed; zero game frames advanced.' : e.event==='api_request_finished' ? `${fmt(e.usage.total_tokens)} tokens · ${e.billing_mode==='chatgpt' ? 'ChatGPT plan' : '$'+e.usage.estimated_usd.toFixed(5)} · ${e.latency_seconds.toFixed(1)} s` : e.goal || '');row.append(p);if(e.segments){const d=document.createElement('p');d.className='detail';d.textContent=`Extra frozen wait: ${e.pause_seconds ?? 0.35}s. `+e.segments.map(x=>`${x.buttons.join('+') || 'neutral'} (${x.x},${x.y}) ${x.frames}f`).join(' → ');row.append(d);} $('timeline').append(row);});
 }
 async function refresh(){
   if(busy)return;busy=true;
@@ -107,4 +118,8 @@ $('accounts').addEventListener('change',()=>command('auth/select',{account:$('ac
 $('gotit').addEventListener('click',async()=>{await command('auth/ack');$('welcome').close();});
 $('welcome').addEventListener('cancel',e=>{e.preventDefault();$('gotit').click();});
 $('runs').addEventListener('change',()=>{archive=$('runs').value;lastImage='';refresh();});
+async function searchNotes(offset=0){try{const query=$('notequery').value;if(noteSearchResult && query!==noteSearchResult.query)offset=0;const r=await fetch(`/api/scratchpad?query=${encodeURIComponent(query)}&offset=${offset}`);const d=await r.json();if(!r.ok)throw Error(d.error);noteSearchResult=d;render(live);}catch(e){commandError=e.message;render(live);}}
+$('searchnotes').addEventListener('click',()=>searchNotes());
+$('nextnotes').addEventListener('click',()=>searchNotes(noteSearchResult?.next_offset ?? live?.scratchpad?.next_offset ?? 0));
+$('recentnotes').addEventListener('click',()=>{noteSearchResult=null;$('notequery').value='';render(live);});
 refresh();loadRuns();setInterval(refresh,350);setInterval(loadRuns,8000);

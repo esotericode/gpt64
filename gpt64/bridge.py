@@ -8,7 +8,7 @@ from pathlib import Path
 import time
 import uuid
 
-from .actions import Segment, validate_sequence
+from .actions import MAX_SEGMENT_FRAMES, MAX_TOTAL_FRAMES, MAX_SEGMENTS, Segment, validate_sequence
 
 
 class BridgeError(RuntimeError):
@@ -78,6 +78,8 @@ class Bridge:
             ready = json.loads((self.root / "ready.json").read_text(encoding="utf-8"))
             if ready["version"] != 1 or ready["system"] != "N64" or not ready["session"]:
                 raise ValueError("unsupported bridge")
+            if ready.get("limits") != {"segment_frames": MAX_SEGMENT_FRAMES, "total_frames": MAX_TOTAL_FRAMES, "segments": MAX_SEGMENTS}:
+                raise BridgeError("Lua bridge timing limits are outdated. Close BizHawk and run start.cmd to load the current bridge; no request was sent.")
             return ready
         except (OSError, ValueError, KeyError, TypeError) as e:
             raise BridgeError("Bridge not ready. Load the generated start.lua in BizHawk with an N64 ROM.") from e
@@ -108,7 +110,8 @@ class Bridge:
         temporary = self.root / "request.tmp"
         temporary.write_text(wire, encoding="ascii")
         temporary.replace(self.root / "request.txt")
-        deadline = time.monotonic() + self.timeout
+        # Long, model-selected bursts need time to run on a slower emulator.
+        deadline = time.monotonic() + self.timeout + expected / 20
         while time.monotonic() < deadline:
             try:
                 reply = json.loads((self.root / "responses" / f"{request_id}.json").read_text(encoding="utf-8"))

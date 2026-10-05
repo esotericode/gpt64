@@ -59,15 +59,15 @@ local function parse(text)
     assert(lines[2] == session, "Stale session; request not executed")
     local id = lines[3]
     assert(id and #id == 32 and id:match("^[0-9a-f]+$"), "Invalid request ID")
-    local count = integer(lines[4], 0, 16)
+    local count = integer(lines[4], 0, 32)
     assert(#lines == count + 4 and text:sub(-1) == "\n", "Invalid request length")
     local segments, total = {}, 0
     for i = 1, count do
         local f, x, y, mask = lines[i + 4]:match("^(%d+) (-?%d+) (-?%d+) (%d+)$")
-        local segment = {frames = integer(f, 1, 120), x = integer(x, -80, 80),
+        local segment = {frames = integer(f, 1, 600), x = integer(x, -80, 80),
                          y = integer(y, -80, 80), mask = integer(mask, 0, 1023)}
         total = total + segment.frames
-        assert(total <= 240, "Sequence too long")
+        assert(total <= 1800, "Sequence too long")
         segments[#segments + 1] = segment
     end
     return id, segments, total
@@ -120,7 +120,8 @@ local function main()
     client.setscreenshotosd(false)
     client.frameskip(0)
     release()
-    publish("ready.json", {version = 1, session = session, system = "N64", buttons = buttons})
+    publish("ready.json", {version = 1, session = session, system = "N64", buttons = buttons,
+            limits = {segment_frames = 600, total_frames = 1800, segments = 32}})
     console.log("gpt64 bridge ready: " .. root)
     while true do
         client.pause()

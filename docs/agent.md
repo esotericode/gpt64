@@ -32,10 +32,14 @@ which the harness releases controls and captures the next paused screenshot.
 | `commentary` | Public explanation tied to visible evidence and the selected input; 1–2 sentences, at most 280 characters |
 | `memory` | Compact notes from visible observations and confirmed outcomes; up to 1,500 characters |
 | `done` | Completion claim supported by screenshots; must have no segments |
-| `segments[].frames` | 1–120 emulator ticks per segment |
+| `pause_seconds` | AI-selected extra frozen wait before its burst, 0–30 wall-clock seconds; normally 0 |
+| `scratchpad_note` | Append one public lesson/correction, up to 2,000 characters; empty string skips writing |
+| `scratchpad_query` | Keywords to recall older notes on the next turn, up to 200 characters |
+| `scratchpad_offset` | Start at 0; use `next_offset` to page older results, including all notes with an empty query |
+| `segments[].frames` | 1–600 emulator ticks per segment |
 | `segments[].x`, `y` | Analog axes from -1 to 1; right/up are positive and camera-relative |
 | `segments[].buttons` | `A`, `B`, `Z`, `Start`, `L`, `R`, `C Up`, `C Down`, `C Left`, `C Right` |
-| Entire sequence | Up to 16 segments and 240 ticks |
+| Entire sequence | Up to 32 segments and 1,800 ticks |
 
 It is instructed to use short bursts near obstacles, check the next observation,
 and release buttons explicitly between presses when needed. It cannot execute
@@ -53,6 +57,10 @@ not a calibrated Mario skill:
   "commentary": "The ledge is directly ahead, so I will try a short forward jump. I will check the landing before moving further.",
   "memory": "A low ledge is visible ahead.",
   "done": false,
+  "pause_seconds": 0,
+  "scratchpad_note": "",
+  "scratchpad_query": "",
+  "scratchpad_offset": 0,
   "segments": [
     {"frames": 6, "x": 0, "y": 0.5, "buttons": ["A"]},
     {"frames": 4, "x": 0, "y": 0.5, "buttons": []}
@@ -62,7 +70,9 @@ not a calibrated Mario skill:
 
 Claude via MCP receives the same contract as tool instructions; sign-in and model selection remain in its official app. It submits the decision to the local act tool, instead of returning a direct Responses API answer.
 
-The dashboard shows commentary before execution and keeps it in the run log.
+The dashboard records commentary when a decision is accepted. With zero extra
+wait, an input may begin before the next browser refresh; its public explanation
+remains visible in the timeline.
 It is a brief public action explanation. Private model reasoning output is
 ignored and not recorded. We also normalize commentary to the two-sentence/
 280-character limit if the model writes too much.
@@ -75,3 +85,17 @@ Completed pending decisions can be held by Pause and resumed without another
 model request. Model knowledge alone does not prove a successful jump or star;
 the instructions ask for visible evidence. Successful autonomous play still
 needs real emulator evaluation.
+
+## Durable lessons
+
+Compact `memory` belongs to the current run. The permanent scratchpad is separate
+and is shared across runs/providers. The prompt asks the AI to compare a previous
+attempt with current screenshots, record failures and corrections, distinguish
+hypotheses from observed facts and use recent verified evidence. It can write
+notes or ask for older notes without moving the game, then inspect the returned
+context on the next decision. An empty-segment note/recall decision advances zero
+frames and still counts toward the run limit and usage.
+
+All older notes remain saved. Search/paging controls the amount included in each
+request; it does not delete information. Persistent notes describe earlier
+experiences, not Mario's current position. A new run must confirm its state visually.

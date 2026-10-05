@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 import re
 import secrets
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, parse_qs
 import zipfile
 import os
 import threading
@@ -55,6 +55,16 @@ def make_server(controller, port=8765):
                 return self.reply(200, (assets / name).read_bytes(), {"index.html": "text/html; charset=utf-8", "app.js": "text/javascript; charset=utf-8", "style.css": "text/css; charset=utf-8"}[name])
             if path == "/api/state":
                 return self.reply(200, {**controller.snapshot(), "control_token": token})
+            if path == "/api/scratchpad":
+                args = parse_qs(urlsplit(self.path).query)
+                query = args.get("query", [""])[0]
+                try:
+                    return self.reply(200, controller.scratchpad_read(query, int(args.get("offset", ["0"])[0])))
+                except ValueError as exc:
+                    return self.reply(400, {"error": str(exc)})
+            if path == "/api/scratchpad/export":
+                return self.reply(200, controller.scratchpad.export(), "application/x-ndjson",
+                                  {"Content-Disposition": 'attachment; filename="gpt64-scratchpad.jsonl"'})
             if path == "/api/runs":
                 runs = []
                 for p in controller.runs_root.glob("*/state.json"):
@@ -99,7 +109,7 @@ def make_server(controller, port=8765):
                 return self.reply(403, {"error": "Local origin required"})
             try:
                 length = int(self.headers.get("Content-Length", "0"))
-                if not 0 <= length <= 8192:
+                if not 0 <= length <= 65536:
                     raise ValueError("Request too large")
                 data = json.loads(self.rfile.read(length) or b"{}")
                 if not isinstance(data, dict):
@@ -115,6 +125,16 @@ def make_server(controller, port=8765):
                     return self.reply(200, controller.external_observation())
                 elif path == "/api/external/decision":
                     return self.reply(200, controller.external_decision(data.get("observation_id"), {k: v for k, v in data.items() if k != "observation_id"}))
+                elif path in ("/api/external/scratchpad/read", "/api/external/scratchpad/append"):
+                    if controller.billing != "claude" or controller.demo:
+                        raise ValueError("Scratchpad MCP writes require the Claude dashboard")
+                    if path.endswith("read"):
+                        if set(data) - {"query", "offset"}:
+                            raise ValueError("Scratchpad read accepts query and offset")
+                        return self.reply(200, controller.scratchpad_read(data.get("query", ""), data.get("offset", 0)))
+                    if set(data) != {"text"}:
+                        raise ValueError("Scratchpad append requires text")
+                    return self.reply(200, controller.scratchpad_append(data["text"]))
                 elif path == "/api/claude/launch":
                     if controller.billing != "claude" or not controller.settings:
                         raise ValueError("Use start-claude.cmd to open the Claude dashboard")
