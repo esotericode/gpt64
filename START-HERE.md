@@ -1,31 +1,35 @@
-# Start here: gpt64 on Windows
+# Start here: gpt64 0.4 on Windows
 
-1. Extract this project to `C:\gpt64\project`. Install Python 3.11+ and
-   BizHawk 2.11.1 with its prerequisites. Put BizHawk and your ROM in the separate
-   folders shown in [the full Windows guide](docs/windows.md).
-2. Run **setup-windows.cmd** once. It creates a local Python environment and
-   installs the sign-in support. No account is billed by setup.
-3. Run **demo.cmd** to inspect the dashboard at `http://127.0.0.1:8765` for free.
-   Close it with Ctrl+C before starting the real server.
-4. Follow the guide's bridge setup: generate `start.lua`, open your ROM in
-   BizHawk, pause, load that script in Lua Console, then run doctor and smoke.
-5. Run **start.cmd**. In the dashboard choose **Continue with ChatGPT** and grant
-   plan usage on the official OpenAI sign-in page. Check your app limits in
-   ChatGPT Settings > Usage. In Run controls choose **Refresh models**, select a
-   listed **Agent model**, then choose **One decision**. Try `gpt-6-sol` first if
-   it appears, then `gpt-6-luna`.
+1. Install Python 3.11+ with its Windows launcher. Download BizHawk 2.11.1,
+   install its prerequisites, and keep its release folder intact. Keep your
+   locally dumped Mario 64 ROM outside this project.
+2. Extract the project's files together. Double-click **start.cmd**.
+   It creates or updates a reusable Python environment automatically. On the
+   first real start, select `EmuHawk.exe`, then your ROM in the two file pickers.
+3. Startup remembers those paths, launches BizHawk with its Lua bridge, verifies
+   a paused screenshot, and opens `http://127.0.0.1:8765`. It sends no inference.
+4. For ChatGPT, choose **Continue with ChatGPT** once, grant plan usage, review
+   app limits in ChatGPT settings, and choose any model in **Refresh models**.
+   Begin with **One decision**. The app remembers your selection and run settings.
+5. For Claude instead, install official Claude Code, then use
+   **start-claude.cmd**. Follow [the Claude guide](docs/claude.md): sign in and
+   select a model inside the official app, which connects to the game's local
+   screenshot/action tools. No Claude credential is copied into gpt64.
 
-The default uses eligible ChatGPT plan access and initially selects GPT-6.1 Sol.
-You can explicitly choose another model your account lists. Catalog access does
-not guarantee an admitted inference request. The app never switches to paid
-API billing automatically. A separate API-key path is documented as an optional
-choice. Keep keys and ROMs on your PC; do not send them to chat.
+**Next time:** double-click the appropriate start launcher. It reuses a live
+bridge or loads the ROM/Lua automatically. **demo.cmd** needs no emulator or
+account. **setup-windows.cmd** can provision the environment without starting.
 
-The model receives Mario-specific instructions on every turn. See
-[what the agent is told](docs/agent.md). Live emulator play and account-specific
-sign-in/inference still need validation on your computer.
+**Replacing files:** stop the dashboard and close BizHawk, then replace the
+whole source folder and run start.cmd. Runtime, settings, logs and sign-in live
+outside that folder. You do not need to preserve individual source files.
 
-Already installed 0.3.0? Stop the server and Lua script, replace the source files
-in the same project folder, preserve `.gpt64` and `.venv`, rerun setup-windows.cmd,
-then reload the Lua launcher and start.cmd. Your saved sign-in lives separately
-and is retained. See [upgrade details](docs/windows.md#upgrading-an-existing-installation).
+**First upgrade from 0.3.x:** overwrite the old project with this version first,
+keeping its old `.gpt64` folder for that first start if you want its logs imported.
+Startup copies the old run records into persistent storage. After that, the
+entire project folder can be replaced. ChatGPT sign-in was already stored outside
+it and is retained. No emulator mailbox or pending action is migrated.
+
+See [the full Windows guide](docs/windows.md) for persistent paths, manual
+commands, recovery, optional API billing, and first-upgrade details. Live
+account inference and real emulator gameplay still need testing on your host.

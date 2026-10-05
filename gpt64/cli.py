@@ -5,6 +5,7 @@ import time
 
 from .actions import BUTTONS, Segment
 from .bridge import Bridge, BridgeError
+from .paths import Settings, data_root
 
 
 def initialize(root: Path, reset=False):
@@ -32,7 +33,8 @@ def show(observation):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Paused, vision-only Mario 64 emulator harness")
-    parser.add_argument("--bridge", type=Path, default=Path(".gpt64/bridge"))
+    parser.add_argument("--data", type=Path, default=data_root(), help="Persistent settings/log directory outside the project")
+    parser.add_argument("--bridge", type=Path, help="Override the persistent emulator mailbox directory")
     parser.add_argument("--timeout", type=float, default=20)
     commands = parser.add_subparsers(dest="command", required=True)
     init = commands.add_parser("init", help="Generate a Lua launcher")
@@ -50,11 +52,20 @@ def main(argv=None):
     sequence.add_argument("file", type=Path)
     dashboard = commands.add_parser("serve", help="Open the local observer dashboard and vision agent")
     dashboard.add_argument("--port", type=int, default=8765)
-    dashboard.add_argument("--runs", type=Path, default=Path(".gpt64/runs"))
+    dashboard.add_argument("--runs", type=Path)
     dashboard.add_argument("--demo", action="store_true", help="Synthetic UI demo, no emulator or API requests")
     dashboard.add_argument("--reasoning", choices=("low", "medium", "high", "xhigh", "max"), default="medium")
-    dashboard.add_argument("--billing", choices=("chatgpt", "api"), default="chatgpt", help="ChatGPT plan by default; paid API is an explicit choice")
-    dashboard.add_argument("--model", default="gpt-6.1-sol", help="Explicit model ID; the dashboard also has a model picker")
+    dashboard.add_argument("--billing", choices=("chatgpt", "api", "claude"), default="chatgpt", help="ChatGPT plan by default; Claude uses the official app over MCP")
+    dashboard.add_argument("--model", help="Explicit model ID; otherwise use your saved selection")
+    launch = commands.add_parser("launch", help="Automatically prepare BizHawk and open the dashboard")
+    launch.add_argument("--billing", choices=("chatgpt", "api", "claude"), default="chatgpt")
+    launch.add_argument("--demo", action="store_true")
+    launch.add_argument("--legacy", type=Path, help="Copy previous run logs into persistent data")
+    configure = commands.add_parser("configure", help="Remember local emulator/ROM paths")
+    configure.add_argument("--emulator", type=Path, required=True)
+    configure.add_argument("--rom", type=Path, required=True)
+    mcp = commands.add_parser("mcp", help="Stdio game tools for the official Claude app; no model authentication")
+    mcp.add_argument("--dashboard-file", type=Path)
     check = commands.add_parser("api-check", help="Read-only metadata check; does not verify inference admission")
     check.add_argument("--billing", choices=("chatgpt", "api"), default="chatgpt")
     check.add_argument("--model", default="gpt-6.1-sol")
@@ -69,7 +80,22 @@ def main(argv=None):
     account.add_argument("client_id")
     commands.add_parser("instructions", help="Print the instructions the Mario agent receives each turn")
     args = parser.parse_args(argv)
+    args.bridge = args.bridge or args.data / "bridge"
     try:
+        if args.command == "mcp":
+            from .mcp_server import serve_stdio
+            serve_stdio(args.dashboard_file or args.data / "dashboard.json")
+            return 0
+        if args.command == "configure":
+            from .launch import emulator_command
+            emulator_command(args.emulator, args.rom, args.bridge / "start.lua")
+            Settings(args.data).save({"emulator": str(args.emulator.resolve()), "rom": str(args.rom.resolve())})
+            print("Saved emulator and ROM paths. Run start.cmd or start-claude.cmd.")
+            return 0
+        if args.command == "launch":
+            from .launch import launch
+            launch(args.data, args.bridge, args.demo, args.billing, args.legacy)
+            return 0
         if args.command == "instructions":
             from .model import INSTRUCTIONS
             print(INSTRUCTIONS)
@@ -106,7 +132,8 @@ def main(argv=None):
             from .server import serve
             if not 0 <= args.port <= 65535:
                 raise ValueError("Port must be between 0 and 65535")
-            serve(args.bridge, args.runs, args.port, args.demo, args.reasoning, args.billing, args.model)
+            serve(args.bridge, args.runs or args.data / "runs", args.port, args.demo, args.reasoning, args.billing, args.model,
+                  settings=Settings(args.data))
             return 0
         if args.command == "init":
             print(f"Open this script in BizHawk's Lua Console:\n{initialize(args.bridge, args.reset)}")

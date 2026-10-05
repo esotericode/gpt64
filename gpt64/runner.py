@@ -44,14 +44,16 @@ class RunLog:
 
 class Controller:
     def __init__(self, bridge_root, runs_root, demo=False, effort="medium",
-                 bridge_factory=None, client_factory=None, billing="api", auth_store=None, model=MODEL):
+                 bridge_factory=None, client_factory=None, billing="api", auth_store=None, model=None, settings=None):
         self.bridge_root = Path(bridge_root).resolve()
         self.runs_root = Path(runs_root).resolve()
         self.runs_root.mkdir(parents=True, exist_ok=True)
         self.demo, self.effort = demo, effort
-        self.model = model_id(model)
-        if billing not in ("api", "chatgpt"):
-            raise ValueError("Choose api or chatgpt billing")
+        self.settings = settings
+        self.preferences = settings.load() if settings else {"model": MODEL, "goal": "", "max_steps": 10, "budget_usd": .25}
+        self.model = model_id(model or self.preferences["model"])
+        if billing not in ("api", "chatgpt", "claude"):
+            raise ValueError("Choose api, chatgpt, or claude billing")
         self.billing = billing
         from .auth import AuthStore
         self.auth_store = auth_store or AuthStore()
@@ -68,17 +70,19 @@ class Controller:
         self.permits = 0
         self.images, self.history = [], []
         self.memory = ""
+        self.external_proposal = None
         self.state = self.initial_state()
 
     def initial_state(self):
         return {"run_id": None, "status": "idle", "model": self.model, "actual_model": None, "demo": self.demo,
-                "key_present": bool(os.environ.get("OPENAI_API_KEY")), "goal": "",
-                "steps": 0, "decisions": 0, "max_steps": 100, "budget_usd": 1.0,
+                "key_present": bool(os.environ.get("OPENAI_API_KEY")), "goal": self.preferences["goal"],
+                "steps": 0, "decisions": 0, "max_steps": self.preferences["max_steps"], "budget_usd": self.preferences["budget_usd"],
                 "usage": {k: 0 for k in ("input_tokens", "output_tokens", "cached_tokens", "cache_write_tokens", "reasoning_tokens", "total_tokens", "estimated_usd")},
                 "reserved_usd": 0, "usage_unknown": False, "commentary": "Ready when you are.",
                 "segments": [], "image_url": None, "events": [], "error": None,
                 "latency_seconds": None, "updated": now(), "reasoning_effort": self.effort if self.model in MODEL_RATES else "provider default",
-                "pricing_date": PRICING_DATE, "rates_per_million": MODEL_RATES.get(self.model), "pending_decision": False}
+                "pricing_date": PRICING_DATE, "rates_per_million": MODEL_RATES.get(self.model), "pending_decision": False,
+                "usage_available": self.billing != "claude", "observation_id": None}
 
     def snapshot(self):
         with self.condition:
@@ -93,12 +97,29 @@ class Controller:
             state["auth_status"] = self.auth_status
             state["auth_error"] = state.get("auth_error") or self.auth_error
             state["model_catalog"] = json.loads(json.dumps(self.catalog))
+            state["preferences"] = {k: self.preferences[k] for k in ("model", "goal", "max_steps", "budget_usd")}
             return state
+
+    def save_preferences(self, changes):
+        from .paths import Settings
+        with self.condition:
+            if self.worker and self.worker.is_alive():
+                raise ValueError("Stop the run before changing saved preferences")
+            if set(changes) - {"model", "goal", "max_steps", "budget_usd"}:
+                raise ValueError("Only run preferences can be changed in the dashboard")
+            Settings.validate(changes)
+            self.preferences.update(changes)
+            if self.settings:
+                self.settings.save(changes)
+            if "model" in changes:
+                self.model = changes["model"]
+                if not self.state["run_id"]:
+                    self._update(model=self.model)
 
     def refresh_models(self):
         with self.condition:
-            if self.demo:
-                raise ValueError("Demo mode makes no model requests")
+            if self.demo or self.billing == "claude":
+                raise ValueError("Choose Claude models with /model in the official Claude app; demo mode makes no model requests")
             if (self.worker and self.worker.is_alive()) or (self.auth_worker and self.auth_worker.is_alive()) or self.catalog["status"] == "loading":
                 raise ValueError("Stop active work and wait for sign-in/model refresh before refreshing models")
             self.catalog = {"status": "loading", "models": [], "error": None}
@@ -175,19 +196,23 @@ class Controller:
                 raise ValueError("Wait for ChatGPT sign-in/model refresh to finish")
             if not self.demo and self.billing == "api":
                 model_rates(selected)
+            self.save_preferences({"model": selected, "goal": goal.strip(), "max_steps": max_steps, "budget_usd": float(budget_usd)})
             self.model = selected
             # Validate credentials before creating a live run. Never include them in state/logs.
-            client = None if self.demo else self.client_factory()
+            client = None if self.demo or self.billing == "claude" else self.client_factory()
             self.log = RunLog(self.runs_root / uuid.uuid4().hex)
             self.state = self.initial_state()
             self._update(run_id=self.log.directory.name, goal=goal.strip(), max_steps=max_steps,
                          budget_usd=float(budget_usd), status="starting", billing_mode="demo" if self.demo else self.billing)
             self.images, self.history, self.memory = [], [], ""
+            self.external_proposal = None
             self.stopping = False
             self.continuous, self.permits = continuous, 0 if continuous else 1
-            self._event("run_started", model=self.model, demo=self.demo, goal=goal.strip(),
+            self._event("run_started", model="Chosen in Claude Code" if self.billing == "claude" else self.model, demo=self.demo, goal=goal.strip(),
                         max_steps=max_steps, budget_usd=budget_usd, pricing_date=PRICING_DATE, billing_mode=self.state["billing_mode"])
-            self.worker = threading.Thread(target=self._run, args=(client,), daemon=True)
+            if self.billing == "claude" and not self.demo:
+                self._update(model="Chosen in Claude Code", actual_model=None, reasoning_effort="Chosen in Claude Code", rates_per_million=None)
+            self.worker = threading.Thread(target=self._run_external if self.billing == "claude" and not self.demo else self._run, args=() if self.billing == "claude" and not self.demo else (client,), daemon=True)
             self.worker.start()
 
     def pause(self):
@@ -233,7 +258,7 @@ class Controller:
             if target != observation.image:
                 shutil.copyfile(observation.image, target)
             self.images.append(target)
-            self._update(image_url=url)
+            self._update(image_url=url, observation_id=observation.request_id)
             self._event("observation", image=filename, advanced=observation.advanced,
                         frame_before=observation.frame_before, frame_after=observation.frame_after)
 
@@ -262,6 +287,83 @@ class Controller:
         message = str(exc) if isinstance(exc, (BridgeError, ModelError, ValueError)) else f"{type(exc).__name__}: unexpected local failure"
         self._update(status="error", error=message)
         self._event("error", message=message)
+
+    def external_observation(self):
+        import base64
+        with self.condition:
+            if self.billing != "claude" or self.demo:
+                raise ValueError("Game MCP controls require the Claude dashboard mode")
+            if not self.images or not self.state["run_id"]:
+                raise ValueError("Click Start run or One decision in the dashboard first")
+            return {"run_id": self.state["run_id"], "observation_id": self.state["observation_id"],
+                    "goal": self.state["goal"], "status": self.state["status"], "pending_decision": self.state["pending_decision"],
+                    "decisions": self.state["decisions"], "max_steps": self.state["max_steps"],
+                    "memory": self.memory, "executed_actions": self.history[-8:],
+                    "image": {"type": "image", "mimeType": "image/png", "data": base64.b64encode(self.images[-1].read_bytes()).decode()}}
+
+    def external_decision(self, observation_id, value):
+        decision = Decision.parse(value)
+        with self.condition:
+            if self.billing != "claude" or self.demo or not self.worker or not self.worker.is_alive() or self.stopping or self.state["status"] not in ("waiting_external", "paused", "observing"):
+                raise ValueError("Arm a Claude run in the dashboard before sending inputs")
+            if observation_id != self.state["observation_id"] or observation_id is None:
+                raise ValueError("Stale screenshot; observe again. No inputs were queued")
+            if self.state["pending_decision"] or self.external_proposal is not None:
+                raise ValueError("A decision is already pending; do not resubmit it")
+            if self.state["decisions"] >= self.state["max_steps"]:
+                raise ValueError("Decision limit reached; start a new run deliberately")
+            self.external_proposal = decision
+            self._update(commentary=decision.commentary, segments=[asdict(s) for s in decision.segments], pending_decision=True,
+                         decisions=self.state["decisions"] + 1)
+            self._event("decision", turn=self.state["decisions"], **decision.public())
+            self.condition.notify_all()
+            return {"accepted": True, "status": "queued", "observation_id": observation_id,
+                    "message": "Do not resubmit. Observe until the screenshot ID changes. If paused/stopped/limit reached, return control to the user."}
+
+    def _run_external(self):
+        """Own the bridge while the user's official Claude client supplies data."""
+        try:
+            with self.bridge_factory() as bridge:
+                self._update(status="observing")
+                self._capture(bridge.observe())
+                while self._permission():
+                    with self.condition:
+                        while self.external_proposal is None and not self.stopping and (self.continuous or self.permits):
+                            self._update(status="waiting_external")
+                            self.condition.wait()
+                        if self.stopping:
+                            break
+                        if self.external_proposal is None:
+                            continue
+                        decision, self.external_proposal = self.external_proposal, None
+                        self.condition.wait(timeout=.35)
+                    if not self._permission():
+                        break
+                    if decision.done:
+                        self._update(status="completed", pending_decision=False)
+                        self._event("goal_completed", commentary=decision.commentary)
+                        return
+                    self._update(status="acting")
+                    self._event("action_requested", segments=[asdict(s) for s in decision.segments])
+                    result = bridge.step(decision.segments)
+                    self.history.append([asdict(s) for s in decision.segments])
+                    self.memory = decision.memory
+                    # Capture first so an old observation cannot be submitted twice.
+                    self._capture(result)
+                    self._update(steps=self.state["steps"] + 1, pending_decision=False)
+                    self._event("action_finished", request_id=result.request_id, advanced=result.advanced,
+                                frame_before=result.frame_before, frame_after=result.frame_after)
+                    with self.condition:
+                        if self.permits:
+                            self.permits -= 1
+                    if self.state["decisions"] >= self.state["max_steps"]:
+                        self._update(status="limit_reached")
+                        self._event("decision_limit_reached")
+                        return
+                self._update(status="stopped", pending_decision=False)
+                self._event("run_stopped")
+        except Exception as exc:
+            self._fail(exc)
 
     def _run(self, client):
         try:

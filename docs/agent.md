@@ -5,7 +5,7 @@ turn**, in the Responses API `instructions` field. The exact text is
 `INSTRUCTIONS` in [model.py](../gpt64/model.py). Print it locally with:
 
 ```powershell
-.\.venv\Scripts\python.exe -m gpt64 instructions
+& "$env:LOCALAPPDATA\gpt64\runtime\Scripts\python.exe" -m gpt64 instructions
 ```
 
 Your setup work does not train or fine-tune a new model. The application supplies
@@ -56,6 +56,8 @@ not a calibrated Mario skill:
   ]
 }
 ```
+
+Claude via MCP receives the same contract as tool instructions; sign-in and model selection remain in its official app. It submits the decision to the local act tool, instead of returning a direct Responses API answer.
 
 The dashboard shows commentary before execution and keeps it in the run log.
 It is a brief public action explanation. Private model reasoning output is

@@ -8,9 +8,12 @@ import re
 import secrets
 from urllib.parse import urlsplit
 import zipfile
+import os
+import threading
+import webbrowser
 
 from .runner import Controller
-from .model import MODEL
+from .bridge import atomic_json
 
 ID = r"[0-9a-f]{32}"
 
@@ -106,6 +109,19 @@ def make_server(controller, port=8765):
                     controller.start(data.get("goal", ""), data.get("max_steps", 100), data.get("budget_usd", 1), path == "/api/start", data.get("model"))
                 elif path == "/api/models":
                     controller.refresh_models()
+                elif path == "/api/preferences":
+                    controller.save_preferences({k: data[k] for k in ("model", "goal", "max_steps", "budget_usd") if k in data})
+                elif path == "/api/external/observe":
+                    return self.reply(200, controller.external_observation())
+                elif path == "/api/external/decision":
+                    return self.reply(200, controller.external_decision(data.get("observation_id"), {k: v for k, v in data.items() if k != "observation_id"}))
+                elif path == "/api/claude/launch":
+                    if controller.billing != "claude" or not controller.settings:
+                        raise ValueError("Use start-claude.cmd to open the Claude dashboard")
+                    if getattr(controller, "claude_process", None) and controller.claude_process.poll() is None:
+                        raise ValueError("Claude Code is already open; return to that window")
+                    from .claude import launch
+                    controller.claude_process = launch(controller.settings.directory)
                 elif path == "/api/pause":
                     controller.pause()
                 elif path == "/api/stop":
@@ -120,14 +136,28 @@ def make_server(controller, port=8765):
             except (ValueError, RuntimeError) as e:
                 return self.reply(400, {"error": str(e)})
 
-    return ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    server.control_token = token
+    return server
 
 
-def serve(bridge_root, runs_root, port=8765, demo=False, effort="medium", billing="chatgpt", model=MODEL):
-    controller = Controller(bridge_root, runs_root, demo=demo, effort=effort, billing=billing, model=model)
+def serve(bridge_root, runs_root, port=8765, demo=False, effort="medium", billing="chatgpt", model=None, settings=None, open_browser=False):
+    controller = Controller(bridge_root, runs_root, demo=demo, effort=effort, billing=billing, model=model, settings=settings)
     server = make_server(controller, port)
+    url = f"http://127.0.0.1:{server.server_port}"
+    descriptor = None
+    if settings:
+        settings.directory.mkdir(parents=True, exist_ok=True)
+        descriptor = settings.directory / "dashboard.json"
+        atomic_json(descriptor, {"url": url, "token": server.control_token})
+        if os.name != "nt":
+            descriptor.chmod(0o600)
     print(f"gpt64 dashboard: http://127.0.0.1:{server.server_port}")
-    print("Demo: synthetic scene, no emulator or API calls." if demo else f"Default model: {model}. Billing: {billing}. Choose a model in the dashboard before starting.")
+    print("Demo: synthetic scene, no emulator or API calls." if demo else f"Billing: {billing}. Choose a model in the dashboard or official Claude app before starting.")
+    if open_browser and not demo:
+        controller.observe()
+    if open_browser:
+        threading.Timer(.3, lambda: webbrowser.open(url)).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -135,3 +165,9 @@ def serve(bridge_root, runs_root, port=8765, demo=False, effort="medium", billin
     finally:
         controller.close()
         server.server_close()
+        if descriptor:
+            try:
+                if json.loads(descriptor.read_text())["token"] == server.control_token:
+                    descriptor.unlink()
+            except (OSError, ValueError, KeyError):
+                pass
