@@ -150,6 +150,15 @@ message types/phases, the public answer, returned format, and a specific
 answers and rejected inputs stay stopped. Usage is recorded when returned;
 there is no automatic repair request, retry, model switch, or paid fallback.
 
+**“Model returned no final answer” with a completed request:** version 0.4.2
+retains finalized public `response.output_item.done` messages when the terminal
+stream envelope has an empty or missing output list. Earlier versions discarded
+those events. It still waits for the terminal response and usage, preserves
+message phases/refusals, and never executes a partial text delta. The export now
+includes stream event counts, the terminal output count, and whether the answer
+came from the envelope or completed message events. If no finalized answer
+arrived anywhere in the stream, the run stays stopped; share the new run ZIP.
+
 See [architecture](docs/architecture.md) for the protocol, model boundary,
 budget accounting, and recovery behavior.
 

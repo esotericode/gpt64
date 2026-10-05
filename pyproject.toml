@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpt64"
-version = "0.4.1"
+version = "0.4.2"
 description = "Vision-only frame-stepped Mario 64 harness for BizHawk"
 requires-python = ">=3.11"
 dependencies = []

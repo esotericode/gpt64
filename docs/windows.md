@@ -193,6 +193,7 @@ files. In Claude mode, press Esc in Claude separately to interrupt its inference
 | ChatGPT 403/plan admission denied | Check account, region and granted plan permission. Catalog presence is insufficient. |
 | ChatGPT allowance/credit limit | Check ChatGPT Settings > Usage; wait or change limits deliberately. |
 | Model response was not a valid structured decision (0.4.0 or earlier) | Upgrade to 0.4.1; it fixes commentary being joined to the final JSON. Test One decision with the same model. |
+| No final answer with completed status/empty output (0.4.1 or earlier) | Upgrade to 0.4.2, which retains finalized streamed messages. If it still fails, share the new run ZIP; it includes stream event counts. |
 | Empty/invalid/multiple final answer or rejected decision | Download that run ZIP and share the model ID and connection mode. Its `api/*.json` records include the public answer, message phases and specific parse error; no input is executed for that turn. |
 | Claude Code missing | Install its official native Windows app; reopen start-claude.cmd. |
 | Claude MCP tool reports no active run | Arm One decision/Start in the dashboard, then ask Claude to continue. |

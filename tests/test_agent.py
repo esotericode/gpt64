@@ -1,4 +1,5 @@
 import base64
+import io
 import json
 from pathlib import Path
 import tempfile
@@ -8,7 +9,7 @@ import unittest
 
 from gpt64.bridge import Observation
 from gpt64.model import (MODEL, ModelError, Decision, payload, parse_response, usage_summary,
-                         model_catalog, reserve_cost, response_diagnostics)
+                         model_catalog, reserve_cost, response_diagnostics, read_stream)
 from gpt64.runner import Controller
 
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3ioAAAAASUVORK5CYII=')
@@ -322,6 +323,36 @@ class RunnerTest(unittest.TestCase):
         self.assertTrue(record["decision_valid"])
         self.assertEqual(json.loads(record["diagnostics"]["answer_text"]), answer())
         self.assertNotIn("PREAMBLE", json.dumps(record))
+
+    def test_empty_plan_terminal_recovers_completed_message_and_accounts_once(self):
+        message = {"id": "msg-test", "type": "message", "role": "assistant", "phase": "final_answer", "status": "completed",
+                   "content": [{"type": "output_text", "text": json.dumps(answer())}]}
+        terminal = response(); terminal.update(model="gpt-6-astra", output=[],
+            usage={"input_tokens": 634, "output_tokens": 66, "output_tokens_details": {"reasoning_tokens": 0}})
+        events = [{"type": "response.output_item.done", "output_index": 0, "item": message},
+                  {"type": "response.completed", "response": terminal}]
+        class StreamClient(FakeClient):
+            def check(self):
+                return "gpt-6-astra"
+            def generate(self, body):
+                self.generations += 1
+                stream = io.BytesIO(b''.join(b'data: '+json.dumps(e).encode()+b'\n\n' for e in events))
+                return read_stream(stream)
+        client = StreamClient()
+        c = Controller(self.root / "bridge", self.root / "runs", billing="chatgpt", model="gpt-6-astra",
+                       bridge_factory=lambda: self.bridge, client_factory=lambda: client)
+        self.controllers.append(c)
+        c.start("Enter Bob-omb Battlefield through its painting.", max_steps=1)
+        self.until(lambda: c.snapshot()["status"] == "limit_reached")
+        self.assertEqual(len(self.bridge.actions), 1)
+        self.assertEqual(client.generations, 1)
+        self.assertEqual(client.counts, 0)
+        self.assertEqual(c.snapshot()["usage"]["total_tokens"], 700)
+        self.assertEqual(c.snapshot()["usage"]["estimated_usd"], 0)
+        record = json.loads((c.log.directory / "api" / "0001.json").read_text())
+        self.assertTrue(record["decision_valid"])
+        self.assertEqual(record["diagnostics"]["stream"]["terminal_output_count"], 0)
+        self.assertEqual(record["diagnostics"]["stream"]["output_source"], "completed_events")
 
     def test_unknown_network_outcome_preserves_reservation(self):
         client = FakeClient(fail=True); c = self.controller(client)
