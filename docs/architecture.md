@@ -70,6 +70,15 @@ The structured answer contains a public commentary, memory, completion flag,
 and controller segments. Commentary is normalized to at most two sentences and
 280 characters. Model actions are validated locally before any execution.
 Private reasoning output items are ignored and never displayed or saved.
+Only one assistant message with phase `final_answer` or no phase is eligible as
+the decision. Explicit `commentary` and future non-final phases are excluded,
+following the official SDK's structured-output parsing rule. Multiple eligible
+answers stop the run; text from different messages is never concatenated.
+Per-turn API records keep allowlisted response shape metadata and at most 16,384
+characters of the public final answer, plus a stable parse-error code on failure.
+They exclude reasoning bodies, encrypted content, intermediate commentary text,
+echoed requests, headers and credentials. The dashboard's existing run ZIP
+includes these records. Invalid answers do not trigger a repair inference.
 An unexpected model, refusal, malformed action, or incomplete response stops
 the run without applying the requested inputs.
 A selected alias's dated snapshot is accepted and logged as the actual model.

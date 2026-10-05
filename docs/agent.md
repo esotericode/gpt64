@@ -41,6 +41,9 @@ It is instructed to use short bursts near obstacles, check the next observation,
 and release buttons explicitly between presses when needed. It cannot execute
 arbitrary Python or Lua. The response is structured JSON; Python validates it
 before sending a numeric mailbox packet, and Lua validates it again.
+The prompt explicitly asks for one raw JSON object without Markdown fences.
+Intermediate API commentary messages are excluded from decision parsing; the
+public `commentary` field inside the final JSON is what the dashboard displays.
 
 For example, this illustrates a proposed short jump press and release. It is
 not a calibrated Mario skill:

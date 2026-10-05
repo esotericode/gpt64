@@ -8,7 +8,7 @@ import unittest
 
 from gpt64.bridge import Observation
 from gpt64.model import (MODEL, ModelError, Decision, payload, parse_response, usage_summary,
-                         model_catalog, reserve_cost)
+                         model_catalog, reserve_cost, response_diagnostics)
 from gpt64.runner import Controller
 
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3ioAAAAASUVORK5CYII=')
@@ -79,6 +79,85 @@ class FakeBridge:
 
 
 class ModelTest(unittest.TestCase):
+    def test_final_answer_is_not_joined_with_intermediate_commentary(self):
+        value = response()
+        value["output"][-1].update(phase="final_answer", role="assistant", status="completed")
+        commentary = {"type": "message", "role": "assistant", "phase": "commentary",
+                      "content": [{"type": "output_text", "text": "I will inspect the scene before choosing an input."}]}
+        for text in ("I will inspect the scene.", json.dumps(answer(done=True))):
+            commentary["content"][0]["text"] = text
+            value["output"].insert(1, commentary)
+            decision = parse_response(value)
+            self.assertFalse(decision.done)
+            self.assertEqual(decision.segments[0].frames, 4)
+            value["output"].pop(1)
+
+    def test_only_one_eligible_final_message_can_be_executed(self):
+        for phase in (None, "commentary", "future_phase"):
+            value = response()
+            final = value["output"].pop()
+            final["phase"] = phase
+            value["output"].append(final)
+            if phase is None:
+                self.assertEqual(parse_response(value).segments[0].frames, 4)
+            else:
+                with self.assertRaisesRegex(ModelError, "no final answer"):
+                    parse_response(value)
+        value = response(); value["output"].append(dict(value["output"][-1]))
+        with self.assertRaisesRegex(ModelError, "multiple possible final answers"):
+            parse_response(value)
+        value["output"][-1]["phase"] = "final_answer"
+        with self.assertRaises(ModelError):
+            parse_response(value)
+
+    def test_malformed_response_shapes_have_specific_errors(self):
+        for output, code in ((None, "invalid_output"), ([None], "invalid_output"),
+                             ([], "missing_answer"), ([{"type": "message", "content": None}], "invalid_content"),
+                             ([{"type": "message", "content": [None]}], "invalid_content"),
+                             ([{"type": "message", "status": "incomplete", "content": []}], "incomplete_message"),
+                             ([{"type": "message", "content": [{"type": "output_text", "text": None}]}], "invalid_text")):
+            value = response(); value["output"] = output
+            with self.subTest(code=code), self.assertRaises(ModelError) as failure:
+                parse_response(value)
+            self.assertEqual(failure.exception.code, code)
+
+    def test_json_errors_distinguish_empty_fenced_and_malformed_answers(self):
+        for text, code, phrase in ((" \n", "empty_answer", "empty final answer"),
+                                   ("```json\n" + json.dumps(answer()) + "\n```", "invalid_json", "Markdown-fenced"),
+                                   ("I will move forward.", "invalid_json", "line 1, column 1"),
+                                   ('{\n"commentary":', "invalid_json", "line 2")):
+            value = response(); value["output"][-1]["content"][0]["text"] = text
+            with self.subTest(phrase=phrase), self.assertRaisesRegex(ModelError, phrase) as failure:
+                parse_response(value)
+            self.assertEqual(failure.exception.code, code)
+
+    def test_refusal_and_invalid_decisions_do_not_become_inputs(self):
+        value = response(); value["output"][-1]["content"] = [{"type": "refusal", "refusal": "PRIVATE_REFUSAL_BODY"}]
+        with self.assertRaises(ModelError) as failure:
+            parse_response(value)
+        self.assertEqual(failure.exception.code, "refusal")
+        self.assertNotIn("PRIVATE_REFUSAL", json.dumps(response_diagnostics(value)))
+        for decision in ({}, [], {**answer(), "segments": [{"frames": 999, "x": 0, "y": 0, "buttons": []}]}):
+            value = response(); value["output"][-1]["content"][0]["text"] = json.dumps(decision)
+            with self.subTest(decision=decision), self.assertRaises(ModelError) as failure:
+                parse_response(value)
+            self.assertEqual(failure.exception.code, "invalid_decision")
+
+    def test_diagnostics_are_bounded_and_exclude_reasoning_and_echoed_inputs(self):
+        value = response()
+        value.update(input="IMAGE_BASE64_PRIVATE", instructions="PRIVATE_INSTRUCTIONS", encrypted_content="PRIVATE_ENCRYPTED")
+        value["output"].insert(0, {"type": "message", "phase": "commentary", "content": [
+            {"type": "output_text", "text": "INTERMEDIATE_TEXT_MUST_NOT_BE_LOGGED"}]})
+        value["output"][-1]["content"][0]["text"] = "X" * 20000
+        value["text"] = {"format": {"type": "json_schema", "schema": {"PRIVATE_SCHEMA": True}}}
+        details = response_diagnostics(value)
+        self.assertEqual(details["returned_format"], "json_schema")
+        self.assertEqual(len(details["answer_text"]), 16384)
+        self.assertTrue(details["answer_truncated"])
+        self.assertEqual(details["answer_characters"], 20000)
+        for secret in ("PRIVATE_REASONING", "IMAGE_BASE64_PRIVATE", "PRIVATE_INSTRUCTIONS", "PRIVATE_ENCRYPTED", "INTERMEDIATE_TEXT", "PRIVATE_SCHEMA"):
+            self.assertNotIn(secret, json.dumps(details))
+
     def test_catalog_accepts_plan_and_api_shapes_without_leaking_metadata(self):
         models = model_catalog({"models": [
             {"slug": "gpt-6-sol", "display_name": "GPT-6 Sol", "visibility": "list", "internal": "PRIVATE"},
@@ -214,6 +293,35 @@ class RunnerTest(unittest.TestCase):
         self.until(lambda: c.snapshot()["status"] == "error")
         self.assertEqual(c.snapshot()["usage"]["output_tokens"], 100)
         self.assertEqual(self.bridge.actions, [])
+
+    def test_rejected_answer_logs_public_text_and_error_without_retrying(self):
+        reply = response(); reply["output"][-1]["content"][0]["text"] = "I will press A."
+        client = FakeClient(reply); c = self.controller(client)
+        c.start("Reach painting")
+        self.until(lambda: c.snapshot()["status"] == "error")
+        self.assertEqual(client.generations, 1)
+        self.assertEqual(c.snapshot()["usage"]["total_tokens"], 1100)
+        self.assertFalse(c.snapshot()["usage_unknown"])
+        self.assertEqual(self.bridge.actions, [])
+        record = json.loads((c.log.directory / "api" / "0001.json").read_text())
+        self.assertEqual(record["parse_error"]["code"], "invalid_json")
+        self.assertEqual(record["diagnostics"]["answer_text"], "I will press A.")
+        self.assertNotIn("PRIVATE_REASONING", json.dumps(record))
+        self.assertIn("Download run ZIP", c.snapshot()["error"])
+
+    def test_commentary_then_final_answer_executes_once_and_logs_final_text(self):
+        reply = response(); reply["output"][-1]["phase"] = "final_answer"
+        reply["output"].insert(1, {"type": "message", "phase": "commentary", "content": [
+            {"type": "output_text", "text": "PREAMBLE_DO_NOT_PARSE_OR_LOG"}]})
+        client = FakeClient(reply); c = self.controller(client)
+        c.start("Reach painting", max_steps=1)
+        self.until(lambda: c.snapshot()["status"] == "limit_reached")
+        self.assertEqual(client.generations, 1)
+        self.assertEqual(len(self.bridge.actions), 1)
+        record = json.loads((c.log.directory / "api" / "0001.json").read_text())
+        self.assertTrue(record["decision_valid"])
+        self.assertEqual(json.loads(record["diagnostics"]["answer_text"]), answer())
+        self.assertNotIn("PREAMBLE", json.dumps(record))
 
     def test_unknown_network_outcome_preserves_reservation(self):
         client = FakeClient(fail=True); c = self.controller(client)

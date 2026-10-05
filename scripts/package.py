@@ -12,7 +12,7 @@ for directory, suffixes in (("gpt64", {".py", ".lua", ".html", ".js", ".css"}),
                             ("tests", {".py"}), ("scripts", {".py"})):
     files += [p for p in (root / directory).rglob("*") if p.is_file() and not p.is_symlink()
               and p.suffix in suffixes and "__pycache__" not in p.parts]
-target = root / "dist/gpt64-windows-0.4.0.zip"
+target = root / "dist/gpt64-windows-0.4.1.zip"
 target.parent.mkdir(exist_ok=True)
 with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as archive:
     for path in sorted(files):

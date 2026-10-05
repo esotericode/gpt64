@@ -41,6 +41,9 @@ reasoning or step-by-step deliberation. Update compact memory from visible evide
 and action outcomes only. Set done only when screenshots support goal completion.
 When done return no segments. Otherwise return one or more segments. A neutral
 segment can wait for game animation. Your commentary will be shown before execution.
+Your final answer must be one JSON object with exactly commentary, memory, done,
+and segments. Each segment has frames, x, y, and buttons. Return raw JSON without
+Markdown fences or text outside the object. Keep memory at most 1500 characters.
 """
 
 SCHEMA = {
@@ -58,6 +61,13 @@ SCHEMA = {
 
 class ModelError(RuntimeError):
     pass
+
+
+class ResponseError(ModelError):
+    """A response rejection with a stable, non-secret diagnostic code."""
+    def __init__(self, code, message):
+        self.code = code
+        super().__init__(message + "; no action was executed. Download run ZIP for diagnostics.")
 
 
 def model_id(value):
@@ -222,7 +232,7 @@ class OpenAIClient:
         body = None if data is None else json.dumps(data).encode()
         req = request.Request("https://api.openai.com/v1/" + path, data=body,
                               headers={"Authorization": "Bearer " + self.key,
-                                       "Content-Type": "application/json", "User-Agent": "gpt64/0.3.1"})
+                                       "Content-Type": "application/json", "User-Agent": "gpt64/0.4.1"})
         try:
             with self.opener.open(req, timeout=self.timeout) as reply:
                 result = json.load(reply)
@@ -319,7 +329,7 @@ class PlanClient(OpenAIClient):
         body.update(store=False, stream=True)
         req = request.Request("https://api.openai.com/v1/responses", data=json.dumps(body).encode(),
                               headers={"Authorization": "Bearer " + self.key, "Content-Type": "application/json",
-                                       "Accept": "text/event-stream", "User-Agent": "gpt64/0.3.1"})
+                                       "Accept": "text/event-stream", "User-Agent": "gpt64/0.4.1"})
         try:
             with self.opener.open(req, timeout=self.timeout) as reply:
                 result = read_stream(reply)
@@ -341,24 +351,100 @@ class PlanClient(OpenAIClient):
             raise ModelError("ChatGPT stream failed or timed out; plan usage may have occurred. No retry or paid API fallback.") from None
 
 
-def parse_response(response, model=MODEL):
-    if not response_model_matches(response.get("model"), model):
-        raise ModelError("Provider returned an unexpected model; no action was executed")
-    if response.get("status") != "completed":
-        code = (response.get("error") or {}).get("code", "")
-        safe = code if isinstance(code, str) and re.fullmatch(r"[a-zA-Z0-9_]{1,100}", code) else ""
-        raise ModelError("Model response was incomplete or failed; no action was executed" +
-                         (f". Code: {safe}. For plan limits, open ChatGPT Settings > Usage" if safe else ""))
+def decision_message(response):
+    """Select one structured answer, following the SDK's message-phase rule.
+
+    Explicit phases other than final_answer are never structured results. Old
+    models may omit phase. Never guess between multiple eligible messages or
+    combine commentary with an answer, even if commentary happens to be JSON.
+    """
+    output = response.get("output")
+    if not isinstance(output, list) or any(not isinstance(item, dict) for item in output):
+        raise ResponseError("invalid_output", "Provider returned a malformed output array")
+    messages = [item for item in output if item.get("type") == "message"
+                and item.get("role", "assistant") == "assistant"
+                and item.get("phase") in (None, "final_answer")]
+    if not messages:
+        raise ResponseError("missing_answer", "Model returned no final answer (only commentary, reasoning, or empty output)")
+    if len(messages) != 1:
+        raise ResponseError("multiple_answers", "Model returned multiple possible final answers")
+    message = messages[0]
+    if message.get("status", "completed") != "completed":
+        raise ResponseError("incomplete_message", "Model's final answer message was not completed")
+    parts = message.get("content")
+    if not isinstance(parts, list) or any(not isinstance(part, dict) for part in parts):
+        raise ResponseError("invalid_content", "Provider returned malformed final-answer content")
+    return message
+
+
+def decision_text(message):
     texts = []
-    for item in response.get("output", []):
-        # Ignore reasoning items entirely. Only the public structured answer is used.
-        if item.get("type") == "message":
-            for part in item.get("content", []):
-                if part.get("type") == "refusal":
-                    raise ModelError("Model declined the request; no action was executed")
-                if part.get("type") == "output_text":
-                    texts.append(part.get("text", ""))
+    for part in message["content"]:
+        if part.get("type") == "refusal":
+            raise ResponseError("refusal", "Model declined the request")
+        if part.get("type") != "output_text" or not isinstance(part.get("text"), str):
+            raise ResponseError("invalid_text", "Provider returned unexpected final-answer content")
+        texts.append(part["text"])
+    text = "".join(texts)
+    if not text.strip():
+        raise ResponseError("empty_answer", "Model returned an empty final answer")
+    return text
+
+
+def response_diagnostics(response, model=MODEL):
+    """Allowlisted shape metadata plus a bounded public final answer.
+
+    Never serialize whole responses: they can contain private reasoning,
+    encrypted content, echoed screenshots/instructions, and provider metadata.
+    """
+    def label(value):
+        return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", value) else None
+    result = {"selected_model": model, "output_items": []}
+    output = response.get("output")
+    if isinstance(output, list):
+        for item in output[:64]:
+            info = {"type": label(item.get("type"))} if isinstance(item, dict) else {"type": None}
+            if isinstance(item, dict) and item.get("type") == "message":
+                info.update(role=label(item.get("role")), phase=label(item.get("phase")), status=label(item.get("status")))
+                parts = item.get("content")
+                if isinstance(parts, list):
+                    info["content_types"] = [label(p.get("type")) if isinstance(p, dict) else None for p in parts[:64]]
+                    info["text_characters"] = sum(len(p["text"]) for p in parts if isinstance(p, dict)
+                                                  and p.get("type") == "output_text" and isinstance(p.get("text"), str))
+            result["output_items"].append(info)
+        result["output_item_count"] = len(output)
+    for source, key in ((response.get("text"), "format"), (response.get("incomplete_details"), "reason"),
+                        (response.get("error"), "code")):
+        if isinstance(source, dict):
+            value = source.get(key)
+            if key == "format":
+                value = value.get("type") if isinstance(value, dict) else None
+            result[{"format": "returned_format", "reason": "incomplete_reason", "code": "provider_error_code"}[key]] = label(value)
     try:
-        return Decision.parse(json.loads("".join(texts)))
-    except (ValueError, TypeError) as e:
-        raise ModelError("Model response was not a valid structured decision") from e
+        text = decision_text(decision_message(response))
+        result.update(answer_text=text[:16384], answer_characters=len(text), answer_truncated=len(text) > 16384)
+    except ResponseError as exc:
+        result["selection_error"] = exc.code
+    return result
+
+
+def parse_response(response, model=MODEL):
+    if not isinstance(response, dict):
+        raise ResponseError("invalid_response", "Provider returned a malformed response")
+    if not response_model_matches(response.get("model"), model):
+        raise ResponseError("unexpected_model", "Provider returned an unexpected model")
+    if response.get("status") != "completed":
+        details = response_diagnostics(response, model)
+        code = details.get("provider_error_code") or details.get("incomplete_reason")
+        raise ResponseError("incomplete_response", "Model response was incomplete or failed" +
+                            (f". Code: {code}. For plan limits, open ChatGPT Settings > Usage" if code else ""))
+    text = decision_text(decision_message(response))
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        kind = "Markdown-fenced text instead of raw JSON" if text.lstrip().startswith("```") else "invalid JSON"
+        raise ResponseError("invalid_json", f"Model's final answer was {kind} (line {exc.lineno}, column {exc.colno})") from exc
+    try:
+        return Decision.parse(value)
+    except ModelError as exc:
+        raise ResponseError("invalid_decision", str(exc)) from exc

@@ -16,7 +16,7 @@ import jwt
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from gpt64.auth import AuthStore, DIRECT, ISSUER, RESOURCE, validate_identity
-from gpt64.model import MODEL, ModelError, PlanClient, read_stream
+from gpt64.model import MODEL, ModelError, PlanClient, read_stream, parse_response
 
 
 class AuthTest(unittest.TestCase):
@@ -146,6 +146,16 @@ class StreamTest(unittest.TestCase):
         result = read_stream(self.stream({"type": "response.output_text.delta", "delta": "partial"},
                                         {"type": "response.completed", "response": final}))
         self.assertEqual(result, final)
+
+    def test_streamed_commentary_is_separate_from_the_final_decision(self):
+        decision = {"commentary": "Mario is at the menu, so I will press Start.", "memory": "Menu.", "done": False,
+                    "segments": [{"frames": 4, "x": 0, "y": 0, "buttons": ["Start"]}]}
+        final = {"status": "completed", "model": MODEL, "output": [
+            {"type": "message", "phase": "commentary", "content": [{"type": "output_text", "text": "I will inspect the menu."}]},
+            {"type": "message", "phase": "final_answer", "content": [{"type": "output_text", "text": json.dumps(decision)}]}]}
+        result = read_stream(self.stream({"type": "response.output_text.delta", "delta": "ignored partial JSON"},
+                                        {"type": "response.completed", "response": final}))
+        self.assertEqual(parse_response(result).segments[0].buttons, ("Start",))
 
     def test_interrupted_stream_cannot_execute_partial_action(self):
         with self.assertRaisesRegex(ModelError, "terminal"):
