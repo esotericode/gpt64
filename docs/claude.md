@@ -78,6 +78,15 @@ The MCP child process uses stdio JSON-RPC. Its only tools are:
 | --- | --- |
 | `observe` | Return the paused screenshot, goal, visible memory and confirmed input history |
 | `act` | Queue one validated decision referencing the current screenshot ID |
+| `scratchpad_read` | Read recent notes and search/page older entries; works before arming a run |
+| `scratchpad_append` | Save a public lesson or correction without advancing time; older notes remain |
+
+Claude chooses controller durations, the next screenshot boundary and optional
+extra frozen time using the same decision fields as ChatGPT. While a long burst
+or chosen wait is pending, it may poll `observe` again; it must never replay `act`.
+User Pause/Stop and the decision limit still override execution. Scratchpad notes
+are shared across providers and persist outside the replaceable source folder.
+After upgrading to 0.5.0, close and reopen Claude Code so it loads the new tools.
 
 The dashboard owns the emulator and enforces all frame/button limits, pause,
 stop and decision limits. A pending/stale decision cannot be submitted twice.

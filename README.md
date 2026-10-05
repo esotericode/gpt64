@@ -88,11 +88,46 @@ asking the model again. See [the agent instructions](docs/agent.md).
 
 ## Timing and cost
 
-The screen updates after observations/actions; this is a screenshot-based
-turn-taking player, not a continuous video stream. Each segment is 1–120 emulator
-frames; each sequence has at most 16 segments and 240 frames. These are emulator
-ticks, not guaranteed distinct game renderings. Short actions help with camera
-movement, momentum, and landing corrections.
+The AI chooses each hold/release duration and the next screenshot boundary.
+Each segment runs for 1–600 emulator ticks; a decision allows up to 32 segments
+and 1,800 ticks total. These are ceilings, not a fixed cadence. Short bursts
+help with camera movement and landing corrections; longer bursts are available
+for clear paths and animations. A segment with empty buttons releases buttons;
+zero stick axes center the stick. A neutral segment still advances game time.
+
+`pause_seconds` lets the AI choose 0–30 seconds of extra frozen time before its
+burst. There is no forced commentary delay for new decisions; normally the AI
+chooses 0. The emulator necessarily stays frozen while inference runs or the
+user holds Pause. A frozen wait cannot animate the game. The dashboard shows
+chosen frame totals and paused waits. Longer bursts take longer to finish:
+Pause/Stop affects the next burst, while an executing burst finishes its frames.
+
+Use **Start run** for automatic successive decisions. **One decision** deliberately
+stops after one turn; the decision limit and optional API budget also stop a run.
+
+## Persistent scratchpad and learning from attempts
+
+The model gets recent screenshots, confirmed inputs and compact working memory
+on every turn. It is instructed to compare outcomes, identify mistakes and change
+its approach. It can write public lessons, hypotheses, routes and corrections to
+an append-only scratchpad. This is remembered experience, not model weight training
+or a guarantee that every attempt improves.
+
+On Windows the notes live at `%LOCALAPPDATA%/gpt64/data/scratchpad/notes.jsonl`.
+They survive new runs, application restarts, source folder replacement and model/
+provider changes. Each note allows 2,000 characters; there is no automatic deletion
+of older notes. The AI appends corrections instead of rewriting history. Recent
+notes and recalled older entries are supplied in bounded context to control token
+use. Keyword search and paging let it read older entries that are not included
+automatically. The entire file remains saved.
+
+ChatGPT decisions use `scratchpad_note`, `scratchpad_query` and `scratchpad_offset`.
+Recall/note-only decisions can advance zero frames and still consume one decision
+and model request. Claude also gets `scratchpad_read`/`scratchpad_append` MCP tools,
+which read/write notes without inference by gpt64 or emulator input. The dashboard
+shows, searches and downloads all permanent notes. Run exports keep the exact
+scratchpad context sent on each API turn plus accepted note events. Notes contain
+public game information; private reasoning and credentials are not collected.
 
 In explicit API mode, before each generation the app counts input tokens and reserves a conservative
 standard-price estimate for the input and the 4,096-token output cap. A run
@@ -129,6 +164,7 @@ Default Windows locations (under `%LOCALAPPDATA%/gpt64/data`):
 | `runs/<run-id>/screens/` | Screenshots used in that run |
 | `runs/<run-id>/api/` | API response/request IDs, status, usage, latency, answer diagnostics |
 | `runs/<run-id>/state.json` | Last dashboard state and dated pricing |
+| `scratchpad/notes.jsonl` | All permanent AI notes; survives runs and source-folder replacement |
 
 Use **Saved runs** to inspect old sessions and **Download run ZIP** for a
 troubleshooting bundle. Records persist locally until you remove them. They

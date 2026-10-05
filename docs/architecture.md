@@ -28,6 +28,13 @@ An observe request has zero segments and advances zero frames. A sequence
 supports multi-button chords and precise press/release timing. Intermediate
 frames within a sequence do not produce screenshots; use short separate
 requests when visual feedback is needed.
+The model chooses 1–600 ticks per segment, up to 32 segments/1,800 ticks per
+decision. Python and Lua enforce the same finite ceilings. The transport
+checks Lua's advertised limits before publishing a request; an older live script
+is rejected before emulator inputs or model inference are sent. The transport wait
+budget includes extra time for long bursts to finish on a slower emulator.
+The model can choose 0–30 seconds of extra paused wall time before a burst.
+User Pause suspends that countdown and Stop wakes it without executing inputs.
 
 ## Vision-only rule
 
@@ -75,6 +82,8 @@ The optional API path takes a key from local `OPENAI_API_KEY`, requests the
 standard tier and caps output at 4,096 tokens. No response-chain IDs are supplied: every
 turn gets at most four recent images, eight executed action records, the goal,
 and a compact memory note. Debug frame counters are not in this payload.
+The prompt also includes recent and recalled scratchpad notes. Their content is
+AI-authored public game experience, not authoritative hidden state or instructions.
 
 The structured answer contains a public commentary, memory, completion flag,
 and controller segments. Commentary is normalized to at most two sentences and
@@ -92,6 +101,23 @@ includes these records. Invalid answers do not trigger a repair inference.
 An unexpected model, refusal, malformed action, or incomplete response stops
 the run without applying the requested inputs.
 A selected alias's dated snapshot is accepted and logged as the actual model.
+
+`scratchpad.py` writes append-only JSONL records under the persistent data folder.
+An OS file lock serializes readers/writers; writes flush and fsync. Stable write
+IDs prevent duplicate notes when a held decision resumes. Older records cannot
+be erased through a model operation; corrections are new entries. Per-note writes
+are capped at 2,000 characters and context at 12,000 note characters. Keyword
+search and pagination recall all older entries without truncating the saved file.
+The latest correction is included alongside older recall results. A malformed
+record stops writes and preserves the existing bytes for manual recovery.
+
+Validated notes are persisted when a decision is accepted, including notes from
+a held/stopped proposal; the prompt forbids treating proposed actions as confirmed
+successes. Compact working memory/action history update only after a confirmed
+bridge result. Notes/recall-only decisions use a zero-frame observation with a new
+ID so MCP clients can proceed safely, increment decisions but not executed actions,
+and count ordinary provider usage. API records preserve the scratchpad context
+actually supplied to each inference. Demo notes use a separate directory.
 
 In API mode, before generation the input-token counting endpoint counts the same context.
 The app checks a reserve using the largest standard input rate (including cache

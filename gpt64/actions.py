@@ -4,8 +4,9 @@ from dataclasses import dataclass
 import math
 
 BUTTONS = ("A", "B", "Z", "Start", "L", "R", "C Up", "C Down", "C Left", "C Right")
-MAX_SEGMENTS = 16
-MAX_TOTAL_FRAMES = 240
+MAX_SEGMENTS = 32
+MAX_SEGMENT_FRAMES = 600
+MAX_TOTAL_FRAMES = 1800
 
 
 @dataclass(frozen=True)
@@ -16,8 +17,8 @@ class Segment:
     buttons: tuple[str, ...] = ()
 
     def __post_init__(self):
-        if type(self.frames) is not int or not 1 <= self.frames <= 120:
-            raise ValueError("frames must be an integer from 1 to 120")
+        if type(self.frames) is not int or not 1 <= self.frames <= MAX_SEGMENT_FRAMES:
+            raise ValueError(f"frames must be an integer from 1 to {MAX_SEGMENT_FRAMES}")
         for axis in (self.x, self.y):
             if isinstance(axis, bool) or not isinstance(axis, (int, float)):
                 raise ValueError("stick axes must be numbers")

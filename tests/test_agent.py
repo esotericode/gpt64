@@ -219,7 +219,7 @@ class ModelTest(unittest.TestCase):
         content = value["input"][0]["content"]
         self.assertEqual(len(content), 5)
         context = json.loads(content[0]["text"])
-        self.assertEqual(set(context), {"goal", "memory", "executed_actions"})
+        self.assertEqual(set(context), {"goal", "memory", "executed_actions", "scratchpad"})
         self.assertEqual(len(context["executed_actions"]), 8)
 
 

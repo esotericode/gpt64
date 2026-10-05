@@ -11,12 +11,16 @@ from .model import INSTRUCTIONS, SCHEMA, NoRedirect
 
 MCP_INSTRUCTIONS = INSTRUCTIONS + '''
 For MCP play, call observe to get the goal, screenshot and its observation_id.
-Submit the public commentary, memory, done flag and segments to act, together
+Submit the public decision fields (including pause_seconds and scratchpad fields) to act, together
 with that observation_id. The tool queues data; the host alone executes inputs.
 Never resubmit an accepted decision, even after a timeout. Call observe for the
-next screenshot. If paused, pending, stopped, completed, errored, or at the
-limit, stop tool calls and return control to the user. Do not loop on unchanged
-screenshots. No game RAM, filesystem, shell or network tools are needed.
+next screenshot. If inputs or a chosen wait are still pending with status acting
+or waiting, call observe again; these read-only polls are safe. If the user paused,
+or the run stopped, completed, errored or reached its limit, return control.
+Otherwise do not loop on unchanged screenshots. Use scratchpad_read to search
+older notes and scratchpad_append to save public lessons without moving Mario.
+These notes survive runs, updates, restarts and model/provider changes. No game
+RAM, arbitrary filesystem, shell or network tools are needed.
 The dashboard does not receive your token usage or actual model ID; use /model
 and /usage in the official Claude app. Do not invent usage measurements.
 '''
@@ -28,8 +32,14 @@ TOOLS = [
     {'name': 'observe', 'description': 'Get the paused screenshot, goal and last confirmed actions. If a queued action is finishing, waits locally up to 10 seconds. Does not advance the emulator.',
      'inputSchema': {'type': 'object', 'properties': {}, 'additionalProperties': False},
      'annotations': {'readOnlyHint': True, 'destructiveHint': False, 'openWorldHint': False}},
-    {'name': 'act', 'description': 'Queue ONE validated public decision for the current screenshot. Inputs are bounded to 240 frames. Never retry an accepted decision; use observe next. The dashboard must have an armed Claude run.',
+    {'name': 'act', 'description': 'Queue ONE validated public decision for the current screenshot. Choose 1–600 frames per segment, up to 1800 frames total, and 0–30 seconds of extra frozen wait. Never retry an accepted decision; use observe next. The dashboard must have an armed Claude run.',
      'inputSchema': ACT_SCHEMA, 'annotations': {'readOnlyHint': False, 'destructiveHint': True, 'idempotentHint': False, 'openWorldHint': False}},
+    {'name': 'scratchpad_read', 'description': 'Read recent persistent notes and search older entries by optional keywords. Advances zero game frames; available before starting a run.',
+     'inputSchema': {'type': 'object', 'properties': {'query': {'type': 'string', 'maxLength': 200}, 'offset': {'type': 'integer', 'minimum': 0, 'maximum': 1000000}}, 'additionalProperties': False},
+     'annotations': {'readOnlyHint': True, 'destructiveHint': False, 'openWorldHint': False}},
+    {'name': 'scratchpad_append', 'description': 'Append a public lesson, route, hypothesis or correction permanently. Does not erase older notes or move the game. Repeating identical text is idempotent.',
+     'inputSchema': {'type': 'object', 'properties': {'text': {'type': 'string', 'minLength': 1, 'maxLength': 2000}}, 'required': ['text'], 'additionalProperties': False},
+     'annotations': {'readOnlyHint': False, 'destructiveHint': False, 'idempotentHint': True, 'openWorldHint': False}},
 ]
 
 
@@ -76,9 +86,16 @@ class DashboardClient:
             image = value.pop('image')
             return {'content': [{'type': 'text', 'text': json.dumps(value)}, image]}
         if name == 'act':
-            if set(arguments) != set(ACT_SCHEMA['required']):
+            required = {'commentary', 'memory', 'done', 'segments', 'observation_id'}
+            if not required <= set(arguments) or set(arguments) - set(ACT_SCHEMA['properties']):
                 raise ValueError('act requires the decision fields and observation_id')
             value = self.send('/api/external/decision', arguments)
+            return {'content': [{'type': 'text', 'text': json.dumps(value)}]}
+        if name in ('scratchpad_read', 'scratchpad_append'):
+            allowed = {'query', 'offset'} if name == 'scratchpad_read' else {'text'}
+            if set(arguments) - allowed or name == 'scratchpad_append' and 'text' not in arguments:
+                raise ValueError('Unexpected scratchpad arguments')
+            value = self.send('/api/external/scratchpad/' + ('read' if name == 'scratchpad_read' else 'append'), arguments)
             return {'content': [{'type': 'text', 'text': json.dumps(value)}]}
         raise ValueError('Unknown game tool')
 
@@ -102,7 +119,7 @@ class Protocol:
             requested = params.get('protocolVersion')
             version = requested if requested in ('2024-11-05', '2025-03-26', '2025-06-18') else '2025-06-18'
             result = {'protocolVersion': version, 'capabilities': {'tools': {}},
-                      'serverInfo': {'name': 'gpt64', 'version': '0.4.0'}, 'instructions': MCP_INSTRUCTIONS}
+                      'serverInfo': {'name': 'gpt64', 'version': '0.5.0'}, 'instructions': MCP_INSTRUCTIONS}
         elif not self.initialized:
             return {**reply, 'error': {'code': -32000, 'message': 'Initialize first'}}
         elif method == 'ping':

@@ -17,7 +17,8 @@ class BridgeTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         initialize(self.root)
-        atomic_json(self.root / "ready.json", {"version": 1, "system": "N64", "session": "test", "buttons": ["A"]})
+        atomic_json(self.root / "ready.json", {"version": 1, "system": "N64", "session": "test", "buttons": ["A"],
+            "limits": {"segment_frames": 600, "total_frames": 1800, "segments": 32}})
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -39,6 +40,32 @@ class BridgeTest(unittest.TestCase):
             with self.assertRaisesRegex(BridgeError, "Another client"):
                 with Bridge(self.root):
                     pass
+
+    def test_old_lua_timing_limits_stop_before_a_request_is_published(self):
+        ready = json.loads((self.root / "ready.json").read_text()); ready.pop("limits")
+        atomic_json(self.root / "ready.json", ready)
+        with self.assertRaisesRegex(BridgeError, "outdated"):
+            with Bridge(self.root):
+                pass
+        self.assertFalse((self.root / "request.txt").exists())
+        self.assertFalse((self.root / "pending.json").exists())
+        self.assertFalse((self.root / "client.lock").exists())
+
+    def test_long_burst_gets_more_transport_time_than_a_zero_frame_capture(self):
+        def server():
+            while not (self.root / "request.txt").exists():
+                time.sleep(.001)
+            lines = (self.root / "request.txt").read_text().splitlines()
+            time.sleep(.08)  # Exceeds the base timeout; actual game work adds time.
+            (self.root / "images" / f"{lines[2]}.png").write_bytes(b"\x89PNG\r\n\x1a\n")
+            atomic_json(self.root / "responses" / f"{lines[2]}.json", {"id": lines[2], "session": lines[1], "ok": True,
+                "frame_before": 1, "frame_after": 601, "advanced": 600, "paused": True, "image": f"{lines[2]}.png"})
+        thread = threading.Thread(target=server); thread.start()
+        try:
+            with Bridge(self.root, timeout=.02) as bridge:
+                self.assertEqual(bridge.step([Segment(600)]).advanced, 600)
+        finally:
+            thread.join(2)
 
     def test_reset_preserves_images_and_logs(self):
         (self.root / "pending.json").write_text("{}")
@@ -113,6 +140,17 @@ class LuaIntegrationTest(unittest.TestCase):
             self.assertEqual(bridge.observe().frame_after, 102)
         self.assertEqual(len((self.root / "inputs.log").read_text().splitlines()), 2)
 
+    def test_long_ai_selected_hold_and_release_advance_exactly_once(self):
+        with Bridge(self.root, timeout=2) as bridge:
+            result = bridge.step([Segment(600, 0, .5, ("A",)), Segment(600), Segment(600)])
+            self.assertEqual(result.advanced, 1800)
+            self.assertEqual(result.frame_after, 1900)
+            self.assertEqual(bridge.observe().frame_after, 1900)
+        lines = (self.root / "inputs.log").read_text().splitlines()
+        self.assertEqual(len(lines), 1800)
+        self.assertTrue(all(line.endswith("0 40 true false") for line in lines[:600]))
+        self.assertTrue(all(line.endswith("0 0 false false") for line in lines[600:]))
+
     def test_stale_session_never_executes(self):
         packet = self.root / "request.tmp"
         packet.write_text("GPT64 1\nold-session\n" + "a" * 32 + "\n1\n30 0 0 1\n")
@@ -127,7 +165,7 @@ class LuaIntegrationTest(unittest.TestCase):
     def test_lua_rejects_out_of_bounds_wire_action(self):
         session = json.loads((self.root / "ready.json").read_text())["session"]
         packet = self.root / "request.tmp"
-        packet.write_text(f"GPT64 1\n{session}\n" + "b" * 32 + "\n1\n121 0 0 1\n")
+        packet.write_text(f"GPT64 1\n{session}\n" + "b" * 32 + "\n1\n601 0 0 1\n")
         packet.replace(self.root / "request.txt")
         deadline = time.monotonic() + 1
         while (self.root / "ready.json").exists() and time.monotonic() < deadline:

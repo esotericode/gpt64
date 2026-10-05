@@ -71,6 +71,39 @@ class MCPTest(unittest.TestCase):
         self.assertIn('action_finished', records)
         self.assertIn('The path looks clear', records)
 
+    def test_persistent_scratchpad_tools_work_before_play_without_game_inputs(self):
+        note = "A short press followed by release produced a visible jump."
+        first = self.client.call('scratchpad_append', {'text': note})
+        again = self.client.call('scratchpad_append', {'text': note})
+        self.assertEqual(first, again)
+        read = self.client.call('scratchpad_read', {'query': 'jump', 'offset': 0})
+        context = json.loads(read['content'][0]['text'])
+        self.assertEqual(context['total_notes'], 1)
+        self.assertEqual(context['entries'][0]['text'], note)
+        self.assertEqual(context['entries'][0]['model'], 'Chosen in Claude Code')
+        self.assertEqual(self.bridge.actions, [])
+        self.factory.assert_not_called()
+        self.arm()
+        self.assertEqual(self.observation()['scratchpad']['entries'][0]['text'], note)
+
+    def test_notes_only_decision_refreshes_id_without_advancing_game_frames(self):
+        self.arm(limit=2)
+        before = self.observation()
+        value = {**answer(), 'segments': [], 'pause_seconds': 0, 'scratchpad_note': 'The last attempt missed; adjust the camera.',
+                 'scratchpad_query': 'camera', 'scratchpad_offset': 0, 'observation_id': before['observation_id']}
+        self.client.call('act', value)
+        self.until(lambda: self.controller.snapshot()['status'] == 'paused' and not self.controller.snapshot()['pending_decision'])
+        after = self.observation()
+        self.assertNotEqual(before['observation_id'], after['observation_id'])
+        self.assertEqual(self.bridge.frames, 10)
+        self.assertEqual(self.controller.snapshot()['steps'], 0)
+        self.assertEqual(after['scratchpad']['total_notes'], 1)
+        self.controller.start('Reach painting', continuous=False)
+        self.until(lambda: self.controller.snapshot()['status'] == 'waiting_external')
+        self.client.call('act', {**answer(), 'pause_seconds': 0, 'observation_id': after['observation_id']})
+        self.until(lambda: self.controller.snapshot()['status'] == 'limit_reached')
+        self.assertEqual(len(self.bridge.actions), 1)
+
     def test_pause_holds_queued_decision_and_resume_never_resubmits(self):
         self.arm(continuous=True)
         obs = self.observation()

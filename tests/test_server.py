@@ -70,6 +70,20 @@ class ServerTest(unittest.TestCase):
             self.send("/api/runs/../../.env")
         self.assertEqual(failure.exception.code, 404)
 
+    def test_scratchpad_search_export_and_write_guards(self):
+        self.controller.scratchpad_append('Hypothesis: turn the camera before approaching the painting.')
+        data = json.load(self.send('/api/scratchpad?query=painting&offset=0'))
+        self.assertEqual(data['total_notes'], 1)
+        self.assertIn('painting', data['entries'][0]['text'])
+        exported = self.send('/api/scratchpad/export').read()
+        self.assertEqual(len(exported.splitlines()), 1)
+        self.assertNotIn(b'control_token', exported)
+        with self.assertRaises(error.HTTPError):
+            self.send('/api/external/scratchpad/append', {'text': 'Unauthenticated note.'})
+        with self.assertRaises(error.HTTPError):
+            self.send('/api/scratchpad?offset=-1')
+        self.assertEqual(self.controller.scratchpad_read()['total_notes'], 1)
+
     def test_plan_account_state_is_public_and_controls_require_token(self):
         store = Mock()
         store.public.return_value = {"ready": True, "label": "Test account", "accounts": [], "active": "test", "welcome": True}
