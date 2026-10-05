@@ -114,8 +114,9 @@ calibrated skill. Real results depend on terrain, camera, and momentum.
 The default path is **Continue with ChatGPT**, using OpenAI's documented flow
 for local apps. Eligible Plus/Pro accounts can grant ChatGPT plan usage for
 eligible requests. You do not need to obtain an API key for this path.
-GPT-6.1 SOL availability is checked against the selected account's live model
-catalog. Sign-in alone does not guarantee that a request is admitted.
+The selected model is checked against the account's live model catalog. GPT-6.1
+Sol remains the initial preference, but you can explicitly choose another listed
+model. Sign-in or catalog presence does not guarantee that a request is admitted.
 
 Run **start.cmd**, open `http://127.0.0.1:8765`, then:
 
@@ -127,7 +128,10 @@ Run **start.cmd**, open `http://127.0.0.1:8765`, then:
 4. Return to the dashboard. Verify the account label and **PLAN ENABLED**.
 5. Use **Manage ChatGPT usage**. In ChatGPT Settings > Usage, review gpt64's
    access and limit its use of credits to what you allow before starting.
-6. Begin with **One decision** and a decision limit of 10.
+6. In Run controls, choose **Refresh models** and select an **Agent model** your
+   account lists. The list also refreshes once after successful sign-in. Try
+   `gpt-6-sol` first if listed, then `gpt-6-luna`.
+7. Begin with **One decision** and a decision limit of 10.
 
 Plus use is limited: the documented five-hour allowance is shared across apps
 using your ChatGPT plan. This is not unlimited unattended game time. Eligible
@@ -143,10 +147,22 @@ For terminal sign-in and a read-only model check:
 
 ```powershell
 .\.venv\Scripts\python.exe -m gpt64 login
-.\.venv\Scripts\python.exe -m gpt64 api-check
+.\.venv\Scripts\python.exe -m gpt64 models
+# Use only an ID that appeared in your list:
+.\.venv\Scripts\python.exe -m gpt64 api-check --model gpt-6-sol
+.\.venv\Scripts\python.exe -m gpt64 serve --model gpt-6-sol
 ```
 
-These do not submit an inference request. To re-enable declined plan permission,
+Login, models, api-check and starting the server do not submit inference requests.
+The first One decision verifies actual access and screenshot/JSON compatibility.
+GPT-6.1 Sol, GPT-6 Sol, GPT-6 Luna and GPT-6 Astra have configured profiles. Other
+listed IDs are experimental in plan mode and use provider default reasoning.
+Unsupported models stop before game inputs. Stop a run before selecting another
+model; pausing and resuming retains its selected model and pending decision.
+Paid API mode permits only the four profiles with verified pricing. Add
+`--billing api` to `models`, `api-check`, and `serve` only for that deliberate path.
+
+To re-enable declined plan permission,
 choose Continue with ChatGPT or run `login --enable-plan`. To add another
 account/workspace use Add account or `login --new`. Select saved accounts in the
 picker, or run `accounts` and then `account <saved-client-id>`. Identical emails
@@ -197,7 +213,7 @@ eligibility cannot be verified by this chat. The key expires from this shell's
 environment when you close it. It is sent only to `https://api.openai.com`.
 
 [Official API-key setup](https://developers.openai.com/api/docs/quickstart)
-and [exact GPT-6.1 SOL model](https://developers.openai.com/api/docs/models/gpt-6.1-sol).
+and [default GPT-6.1 Sol model](https://developers.openai.com/api/docs/models/gpt-6.1-sol).
 
 ## 5. Start the dashboard
 
@@ -239,7 +255,7 @@ decision counts. In **ChatGPT plan** mode it links to ChatGPT Settings > Usage;
 it does not translate your Plus allowance or credit use into API-price dollars.
 Remaining allowance/account credits are not inferred from token totals.
 
-In explicit **API** mode it shows dollar estimates at dated 2026-10-04 standard
+In explicit **API** mode it shows dollar estimates at dated 2026-10-05 standard
 rates. It counts input tokens and reserves the highest standard input rate plus
 the 4,096-token output cap before each generation. Reasoning is already included
 in output and is not charged twice. Prices, regional premiums and unknown
@@ -262,9 +278,11 @@ reasoning is included. Review the goals and screenshots before sharing a bundle.
 | ChatGPT sign-in dependency missing | Run setup-windows.cmd or install `.[signin]` in `.venv`. |
 | ChatGPT plan use not granted | Choose Continue with ChatGPT and grant plan usage. |
 | ChatGPT allowance/credit limit | Open ChatGPT Settings > Usage; wait or change limits deliberately. |
-| ChatGPT model unavailable / 403 | Verify selected account, region, eligibility and GPT-6.1 SOL availability. No model/billing fallback. |
+| ChatGPT model not listed | Refresh models and explicitly select a listed model. Try GPT-6 Sol or GPT-6 Luna if offered. No paid API fallback. |
+| ChatGPT 403 / inference admission denied | Verify account, region and plan permission. Catalog presence alone does not grant inference. |
+| Unrecognized model catalog | Refresh models or sign in again. This is a response-format problem, not evidence that your subscription lacks a model. |
 | API 401, in explicit API mode | Re-enter the API key in this PowerShell window. |
-| API 403 or 404 | Verify project permissions and exact `gpt-6.1-sol` availability. |
+| API 403 or 404 | Verify project permissions and selected model availability. |
 | API 429 | Check credit, rate limits, and project limits. No retry is automatic. |
 | Incomplete response | Output cap may include reasoning; inspect usage, then deliberately start another run. |
 | Budget reached | The next request's maximum estimate did not fit; choose a new run/budget deliberately. |
@@ -286,6 +304,25 @@ For unreadable saved credentials, stop all gpt64 servers, disconnect the app in
 ChatGPT Settings, then move `%LOCALAPPDATA%\gpt64\accounts.dat` to a private
 backup and sign in again. This starts a new local registration; do not share the
 backup. Normal sign-out keeps the host/client mapping for later reauthorization.
+
+## Upgrading an existing installation
+
+For 0.3.1's model picker:
+
+1. Stop the dashboard server with Ctrl+C. Stop `start.lua` in BizHawk's Lua Console.
+2. Extract the new ZIP to a temporary folder. Copy its project source files into
+   your existing `C:\gpt64\project`, replacing files with the same names. Do not
+   delete your existing `.gpt64` (logs/bridge), `.venv`, emulator, ROM, or saves.
+   Keep the project at the same path so its Lua launcher remains valid.
+3. Run **setup-windows.cmd** again to reinstall the updated package in `.venv`.
+   ChatGPT sign-in is stored outside the project and should be retained.
+4. Reload your existing `.gpt64\bridge\start.lua` in the Lua Console, then run
+   **start.cmd**. Refresh the dashboard page so it loads the new controls.
+5. Choose **Refresh models**, select a listed model, and choose **One decision**.
+
+If you moved the project folder, stop the Lua script, run
+`.\.venv\Scripts\python.exe -m gpt64 init --reset`, and load the newly printed
+launcher. This preserves run logs and screenshots; it does not rewind the game.
 
 ## 7. What the model is told
 

@@ -83,3 +83,18 @@ class ServerTest(unittest.TestCase):
             self.send("/api/auth/ack", {})
         self.send("/api/auth/ack", {}, {"X-Gpt64-Control": state["control_token"]}).close()
         store.acknowledge.assert_called_once()
+
+    def test_model_catalog_requires_control_token_and_does_not_start_run(self):
+        self.controller.demo = False
+        client = Mock()
+        client.models.return_value = [{"id": "gpt-6-sol", "display_name": "GPT-6 Sol", "profile_known": True}]
+        self.controller.client_factory = lambda: client
+        state = json.load(self.send("/api/state"))
+        with self.assertRaises(error.HTTPError):
+            self.send("/api/models", {})
+        self.send("/api/models", {}, {"X-Gpt64-Control": state["control_token"]}).close()
+        state = json.load(self.send("/api/state"))
+        self.assertEqual(state["model_catalog"]["models"][0]["id"], "gpt-6-sol")
+        self.assertIsNone(state["run_id"])
+        client.generate.assert_not_called()
+        client.count.assert_not_called()

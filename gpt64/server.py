@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 import zipfile
 
 from .runner import Controller
+from .model import MODEL
 
 ID = r"[0-9a-f]{32}"
 
@@ -102,7 +103,9 @@ def make_server(controller, port=8765):
                     raise ValueError("Expected an object")
                 path = urlsplit(self.path).path
                 if path in ("/api/start", "/api/step"):
-                    controller.start(data.get("goal", ""), data.get("max_steps", 100), data.get("budget_usd", 1), path == "/api/start")
+                    controller.start(data.get("goal", ""), data.get("max_steps", 100), data.get("budget_usd", 1), path == "/api/start", data.get("model"))
+                elif path == "/api/models":
+                    controller.refresh_models()
                 elif path == "/api/pause":
                     controller.pause()
                 elif path == "/api/stop":
@@ -120,11 +123,11 @@ def make_server(controller, port=8765):
     return ThreadingHTTPServer(("127.0.0.1", port), Handler)
 
 
-def serve(bridge_root, runs_root, port=8765, demo=False, effort="medium", billing="chatgpt"):
-    controller = Controller(bridge_root, runs_root, demo=demo, effort=effort, billing=billing)
+def serve(bridge_root, runs_root, port=8765, demo=False, effort="medium", billing="chatgpt", model=MODEL):
+    controller = Controller(bridge_root, runs_root, demo=demo, effort=effort, billing=billing, model=model)
     server = make_server(controller, port)
     print(f"gpt64 dashboard: http://127.0.0.1:{server.server_port}")
-    print("Demo: synthetic scene, no emulator or API calls." if demo else f"Model: gpt-6.1-sol. Billing: {billing}. Open the dashboard to observe or start a run.")
+    print("Demo: synthetic scene, no emulator or API calls." if demo else f"Default model: {model}. Billing: {billing}. Choose a model in the dashboard before starting.")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

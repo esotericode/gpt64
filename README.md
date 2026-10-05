@@ -2,7 +2,8 @@
 
 A vision-only Mario 64 agent and local observer dashboard for BizHawk on Windows.
 
-The agent uses **GPT-6.1 SOL (`gpt-6.1-sol`)** through the OpenAI Responses API.
+The agent defaults to **GPT-6.1 SOL (`gpt-6.1-sol`)** through the OpenAI Responses API.
+You can explicitly choose another model from your account's live catalog.
 It sees screenshots and its own executed inputs, selects a bounded input burst,
 and gives a public explanation of one or two sentences. BizHawk advances the
 requested frames and pauses while the next decision is made. No game RAM is read.
@@ -20,6 +21,7 @@ Successful autonomous gameplay has not yet been demonstrated.
 - Returned input/output/cached/cache-write/reasoning token counts, estimated cost,
   request latency, pending request reservation, and decision/action totals.
 - Start, One decision, Pause, Stop, Observe, saved run inspection, and ZIP export.
+- Account-specific model picker and read-only catalog refresh.
 
 Each run saves ongoing JSONL events, screenshots, API IDs/usage, and its last
 state. Commentary is a short public action summary; private reasoning content,
@@ -48,7 +50,7 @@ Follow the complete [Windows setup guide](docs/windows.md). You need:
 
 1. Python 3.11+ and BizHawk 2.11.1 with its prerequisites.
 2. Your locally supplied Mario 64 ROM.
-3. An eligible ChatGPT account that grants plan usage and offers GPT-6.1 SOL,
+3. An eligible ChatGPT account that grants plan usage and offers a compatible vision model,
    or an explicitly configured, separately billed OpenAI API project.
 
 **The default is Continue with ChatGPT.** Eligible Plus/Pro users can authorize
@@ -68,14 +70,29 @@ outside the checkout; Windows encrypts saved OAuth credentials with DPAPI.
 .\.venv\Scripts\python.exe -m gpt64 doctor
 .\.venv\Scripts\python.exe -m gpt64 smoke
 .\.venv\Scripts\python.exe -m gpt64 login
-.\.venv\Scripts\python.exe -m gpt64 api-check
+.\.venv\Scripts\python.exe -m gpt64 models
+# If your catalog lists this model:
+.\.venv\Scripts\python.exe -m gpt64 api-check --model gpt-6-sol
 .\.venv\Scripts\python.exe -m gpt64 serve
 ```
 
 Or use start.cmd and Continue with ChatGPT in the dashboard. Enter a goal and
-begin with **One decision**. GPT-6.1 SOL is fixed; missing access stops the run.
+choose an **Agent model** in Run controls, then begin with **One decision**.
+Try `gpt-6-sol` first if listed, then `gpt-6-luna`. Neither requires switching to
+paid API billing. Catalog presence does not prove inference admission.
 Reasoning defaults to medium (`serve --reasoning high` also works).
 See [what the agent is told on every turn](docs/agent.md).
+
+`serve --model MODEL_ID` sets the initial selection. GPT-6.1 Sol, GPT-6 Sol,
+GPT-6 Luna and GPT-6 Astra have configured vision/reasoning/pricing profiles.
+Other listed IDs can be selected experimentally in ChatGPT plan mode, with
+provider default reasoning; unsupported image/structured-output requests stop
+before game inputs. Paid API mode allows only the four priced profiles.
+Stop an existing run before switching models. The selected and returned model
+IDs are saved with the run; a dated snapshot of the selected alias is accepted.
+
+Upgrading from 0.3.0: follow [the upgrade steps](docs/windows.md#upgrading-an-existing-installation).
+Preserve `.gpt64` and `.venv`, replace the source files, and rerun setup.
 
 The API-key path is an explicit `--billing api` choice for both `api-check`
 and `serve`. Set `OPENAI_API_KEY` locally as described in the guide.
@@ -100,7 +117,7 @@ Plan requests stream to a terminal response; an interrupted stream cannot
 execute a partial action. The preview route does not accept an output-token
 cap, so use the 10-decision initial limit and your ChatGPT app limits.
 
-API rates are dated 2026-10-04. Dollar totals are estimates for this app's recorded
+API rates are dated 2026-10-05. Dollar totals are estimates for this app's recorded
 calls, not your account balance or authoritative invoice. Regional premiums,
 price changes, other applications, and unknown request outcomes may change the
 actual bill. Use [OpenAI API usage](https://platform.openai.com/usage) to reconcile

@@ -48,12 +48,18 @@ implements no RAM APIs at all.
 
 ## Model, commentary, and budget
 
-`model.py` targets `gpt-6.1-sol` explicitly through the official Responses API.
-Medium reasoning and structured JSON apply to both billing modes.
+`model.py` defaults to `gpt-6.1-sol` through the official Responses API.
+The dashboard or `serve --model` explicitly selects the model for a new run.
+Configured GPT-6 profiles use medium reasoning by default and structured JSON.
+Other account-listed models are experimental in plan mode, omit a reasoning
+override, and must accept screenshot input and the JSON schema before any inputs.
 The default ChatGPT plan path uses the documented local-app OAuth flow,
 `store:false` and `stream:true`. It omits unsupported output-cap and service-tier
 fields and requires a terminal SSE event before parsing/executing an answer.
-The exact model must be in the selected account's live catalog.
+The selected model must be in the selected account's live catalog. Catalog parsing
+supports plan `models`/`slug` and API `data`/`id` shapes, preserves order, and omits
+hidden entries. Listing is read-only and does not prove inference admission.
+Changing accounts invalidates the dashboard catalog. No model changes on resume.
 
 The optional API path takes a key from local `OPENAI_API_KEY`, requests the
 standard tier and caps output at 4,096 tokens. No response-chain IDs are supplied: every
@@ -66,6 +72,7 @@ and controller segments. Commentary is normalized to at most two sentences and
 Private reasoning output items are ignored and never displayed or saved.
 An unexpected model, refusal, malformed action, or incomplete response stops
 the run without applying the requested inputs.
+A selected alias's dated snapshot is accepted and logged as the actual model.
 
 In API mode, before generation the input-token counting endpoint counts the same context.
 The app checks a reserve using the largest standard input rate (including cache
@@ -76,8 +83,11 @@ and records cached input, cache writes, output, and reasoning counts. Reasoning
 is already included in output and is not added again for cost calculation.
 Even an incomplete or rejected answer is counted when usage is returned.
 
-Prices are dated 2026-10-04, with input/cached/cache-write/output rates of
-$2/$0.10/$2.50/$10 per million tokens. These are estimated standard charges,
+API pricing profiles are dated 2026-10-05. Input/cached/cache-write/output rates
+per million tokens are $2/$0.10/$2.50/$10 for GPT-6.1 Sol,
+$2/$0.20/$2.50/$10 for GPT-6 Sol, $0.10/$0.01/$0.125/$0.50 for GPT-6 Luna,
+and $10/$1/$12.50/$50 for GPT-6 Astra. Unknown pricing profiles are rejected
+before paid API requests. These are estimated standard charges,
 not authoritative account billing. Regional premiums and pricing changes are
 not modeled. An unknown request outcome retains its reserve and stops; an
 unexpected service tier also stops for billing verification. Limits are per run.

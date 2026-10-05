@@ -7,7 +7,8 @@ import time
 import unittest
 
 from gpt64.bridge import Observation
-from gpt64.model import MODEL, ModelError, Decision, payload, parse_response, usage_summary
+from gpt64.model import (MODEL, ModelError, Decision, payload, parse_response, usage_summary,
+                         model_catalog, reserve_cost)
 from gpt64.runner import Controller
 
 PNG = base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a3ioAAAAASUVORK5CYII=')
@@ -78,6 +79,36 @@ class FakeBridge:
 
 
 class ModelTest(unittest.TestCase):
+    def test_catalog_accepts_plan_and_api_shapes_without_leaking_metadata(self):
+        models = model_catalog({"models": [
+            {"slug": "gpt-6-sol", "display_name": "GPT-6 Sol", "visibility": "list", "internal": "PRIVATE"},
+            {"slug": "hidden", "visibility": "hide"},
+            {"slug": "gpt-6-luna"}, {"slug": "gpt-6-sol"}]})
+        self.assertEqual([m["id"] for m in models], ["gpt-6-sol", "gpt-6-luna"])
+        self.assertNotIn("PRIVATE", json.dumps(models))
+        self.assertEqual(model_catalog({"data": [{"id": "gpt-6-sol"}]}), model_catalog({"models": [{"slug": "gpt-6-sol"}]}))
+        for value in ({}, {"models": None}, {"models": [None]}, {"models": [{"slug": "../bad"}]}):
+            with self.subTest(value=value), self.assertRaises(ModelError):
+                model_catalog(value)
+
+    def test_selected_model_payload_snapshot_and_profile_specific_accounting(self):
+        with tempfile.TemporaryDirectory() as directory:
+            image = Path(directory) / "frame.png"; image.write_bytes(PNG)
+            body = payload("Reach painting", [image], [], "", model="gpt-6-luna")
+            experimental = payload("Reach painting", [image], [], "", model="account-vision-model")
+        self.assertEqual(body["model"], "gpt-6-luna")
+        self.assertEqual(body["reasoning"], {"effort": "medium"})
+        self.assertNotIn("reasoning", experimental)
+        value = response(); value["model"] = "gpt-6-luna-2026-09-01"
+        parse_response(value, "gpt-6-luna")
+        with self.assertRaises(ModelError):
+            parse_response(value, "gpt-6-sol")
+        self.assertAlmostEqual(usage_summary(value, "gpt-6-luna")["estimated_usd"], (700*.1 + 100*.01 + 200*.125 + 100*.5)/1e6)
+        self.assertAlmostEqual(reserve_cost(1000, "gpt-6-luna"), (1000*.125 + 4096*.5)/1e6)
+        self.assertEqual(usage_summary(value, "account-vision-model", api_pricing=False)["estimated_usd"], 0)
+        with self.assertRaises(ModelError):
+            reserve_cost(1000, "unpriced-model")
+
     def test_public_commentary_is_two_sentences_and_bounded(self):
         decision = Decision.parse(answer())
         self.assertNotIn("Extra", decision.commentary)
@@ -234,3 +265,36 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(c.snapshot()["usage"]["total_tokens"], 1100)
         self.assertIn("subscription_sharing_usage_limit_exceeded", c.snapshot()["error"])
         self.assertEqual(self.bridge.actions, [])
+
+    def test_explicit_replacement_model_executes_and_cannot_change_on_resume(self):
+        reply = response(); reply["model"] = "gpt-6-luna"
+        client = FakeClient(reply); c = self.controller(client)
+        c.start("Reach painting", continuous=False, model="gpt-6-luna")
+        self.until(lambda: c.snapshot()["status"] == "paused" and c.snapshot()["steps"] == 1)
+        self.assertEqual(client.body["model"], "gpt-6-luna")
+        self.assertEqual(c.snapshot()["model"], "gpt-6-luna")
+        self.assertEqual(c.snapshot()["actual_model"], "gpt-6-luna")
+        with self.assertRaisesRegex(ValueError, "Stop this run"):
+            c.start("Reach painting", model=MODEL)
+        self.assertEqual(client.generations, 1)
+
+    def test_missing_plan_model_stops_before_observing_or_generating(self):
+        client = FakeClient()
+        def check():
+            raise ModelError("Selected model not listed; choose another")
+        client.check = check
+        c = Controller(self.root / "bridge", self.root / "runs", billing="chatgpt",
+                       bridge_factory=lambda: self.bridge, client_factory=lambda: client)
+        self.controllers.append(c)
+        c.start("Reach painting", model="gpt-6-sol")
+        self.until(lambda: c.snapshot()["status"] == "error")
+        self.assertEqual(client.generations, 0)
+        self.assertEqual(self.bridge.counter, 0)
+
+    def test_unpriced_api_selection_is_rejected_before_requests(self):
+        client = FakeClient(); c = self.controller(client)
+        with self.assertRaisesRegex(ModelError, "verified pricing"):
+            c.start("Reach painting", model="account-vision-model")
+        self.assertEqual(client.counts, 0)
+        self.assertEqual(client.generations, 0)
+        self.assertIsNone(c.log)
