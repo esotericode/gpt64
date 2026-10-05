@@ -1,11 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-if not exist ".venv\Scripts\python.exe" goto setup_needed
-".venv\Scripts\python.exe" -m gpt64 serve --demo
+py -3 scripts\bootstrap.py --demo
+if errorlevel 1 echo Check the error above and docs\windows.md.
 pause
 exit /b
-:setup_needed
-echo Run setup-windows.cmd first, then demo.cmd again.
-pause
-exit /b 1

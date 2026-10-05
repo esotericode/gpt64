@@ -2,8 +2,9 @@
 
 A vision-only Mario 64 agent and local observer dashboard for BizHawk on Windows.
 
-The agent defaults to **GPT-6.1 SOL (`gpt-6.1-sol`)** through the OpenAI Responses API.
-You can explicitly choose another model from your account's live catalog.
+The ChatGPT agent defaults to **GPT-6.1 SOL (`gpt-6.1-sol`)** through the OpenAI Responses API.
+You can explicitly choose any model from your account's live catalog, subject to screenshot/JSON compatibility.
+Claude Pro is supported through the official Claude Code app and local MCP game tools; its sign-in and model picker stay in that app.
 It sees screenshots and its own executed inputs, selects a bounded input burst,
 and gives a public explanation of one or two sentences. BizHawk advances the
 requested frames and pauses while the next decision is made. No game RAM is read.
@@ -30,72 +31,60 @@ API keys, request headers, and image base64 are excluded from the records.
 ## Download and start
 
 Download [main as a ZIP](https://github.com/esotericode/gpt64/archive/refs/heads/main.zip),
-extract it to `C:\gpt64\project`, and open [START-HERE.md](START-HERE.md).
-Install Python 3.11+, then run **setup-windows.cmd** once. Run **demo.cmd** to
-inspect the dashboard free of model usage, or **start.cmd** after connecting
-BizHawk. No npm build is required.
+extract all files together, and read [START-HERE.md](START-HERE.md).
+Install Python 3.11+ and BizHawk 2.11.1 with its prerequisites once. Keep the
+emulator and your locally dumped ROM outside the source folder.
 
-Equivalent demo command, after setup:
+Double-click **start.cmd** for ChatGPT, **start-claude.cmd** for Claude, or
+**demo.cmd** for the free synthetic scene. Startup installs/updates its reusable
+Python environment, remembers your emulator/ROM file picks, starts BizHawk with
+Lua, verifies a paused screenshot, and opens the browser. Later starts reuse a
+live bridge. No model request is sent until you deliberately start model work.
+
+The runtime, settings, logs and credentials live outside the source folder.
+After the first upgrade from 0.3.x, you can replace the whole project folder,
+then double-click its launcher. No manual setup/Lua regeneration is needed.
+Old `.gpt64/runs` logs are copied on the first upgrade if that folder is present;
+see [upgrade details](docs/windows.md#upgrading-an-existing-installation).
+
+## Choose an account and model
+
+**ChatGPT:** Continue with ChatGPT, grant plan use, review app limits in ChatGPT
+settings, then Refresh models and select any account-listed ID. The preference
+is remembered. GPT-6 Sol and Luna are configured options if offered; unknown
+profiles use provider default reasoning. Image/structured-output rejection stops
+before inputs. Catalog presence is not proof of inference admission, so begin
+with One decision. No automatic model or paid API fallback occurs.
+
+**Claude Pro:** install the official native Claude Code app, run start-claude.cmd,
+and choose Open Claude Code in the dashboard. Sign in through the native app
+and use `/model` for whatever models it offers. Arm One decision in the dashboard
+and ask Claude to use gpt64 toward its displayed goal. Screenshots, commentary,
+inputs, limits and logs work through the local game tools. Check `/usage` in
+Claude; token counts, actual model ID and cost are unavailable to this dashboard.
+See [the Claude guide](docs/claude.md).
+
+The Claude app remains unmodified, handles its own authentication and inference,
+and connects only the game's MCP tools in the supplied launch configuration.
+gpt64 never reads or intermediates its subscription credentials. The connection
+is tested with simulated clients; real account inference/gameplay needs validation.
+
+**Optional API billing:** explicitly use `--billing api` with your locally entered
+OpenAI API key. Only configured API pricing profiles are permitted; budget
+accounting uses the selected model's rates. See [the Windows guide](docs/windows.md)
+for exact local key entry, setup, folders, diagnostics and recovery.
+
+For terminal use after setup:
 
 ```powershell
-.\.venv\Scripts\python.exe -m gpt64 serve --demo
+$gpt64Python = "$env:LOCALAPPDATA\gpt64\runtime\Scripts\python.exe"
+& $gpt64Python -m gpt64 models
+& $gpt64Python -m gpt64 launch
+& $gpt64Python -m gpt64 serve --model gpt-6-sol --reasoning high
 ```
 
-Open `http://127.0.0.1:8765`. Demo mode is a clearly labelled synthetic scene
-with scripted decisions and no emulator, ROM, model allowance or credits.
-
-## Run with Mario 64
-
-Follow the complete [Windows setup guide](docs/windows.md). You need:
-
-1. Python 3.11+ and BizHawk 2.11.1 with its prerequisites.
-2. Your locally supplied Mario 64 ROM.
-3. An eligible ChatGPT account that grants plan usage and offers a compatible vision model,
-   or an explicitly configured, separately billed OpenAI API project.
-
-**The default is Continue with ChatGPT.** Eligible Plus/Pro users can authorize
-local apps to use their plan or available credits. Account/model eligibility
-and shared allowance limits still apply. The dashboard provides an account
-picker, sign-in/sign-out, plan-use confirmation and a Manage usage link.
-It never switches to paid API billing or another model automatically.
-
-See [official local-app sign-in](https://developers.openai.com/siwc/quickstart).
-The complete guide includes exact folders, prerequisites, hidden local key
-entry for the optional API path, and troubleshooting. Credentials remain
-outside the checkout; Windows encrypts saved OAuth credentials with DPAPI.
-
-```powershell
-.\.venv\Scripts\python.exe -m gpt64 init
-# Load your ROM, pause BizHawk, then open the printed start.lua in Lua Console.
-.\.venv\Scripts\python.exe -m gpt64 doctor
-.\.venv\Scripts\python.exe -m gpt64 smoke
-.\.venv\Scripts\python.exe -m gpt64 login
-.\.venv\Scripts\python.exe -m gpt64 models
-# If your catalog lists this model:
-.\.venv\Scripts\python.exe -m gpt64 api-check --model gpt-6-sol
-.\.venv\Scripts\python.exe -m gpt64 serve
-```
-
-Or use start.cmd and Continue with ChatGPT in the dashboard. Enter a goal and
-choose an **Agent model** in Run controls, then begin with **One decision**.
-Try `gpt-6-sol` first if listed, then `gpt-6-luna`. Neither requires switching to
-paid API billing. Catalog presence does not prove inference admission.
-Reasoning defaults to medium (`serve --reasoning high` also works).
-See [what the agent is told on every turn](docs/agent.md).
-
-`serve --model MODEL_ID` sets the initial selection. GPT-6.1 Sol, GPT-6 Sol,
-GPT-6 Luna and GPT-6 Astra have configured vision/reasoning/pricing profiles.
-Other listed IDs can be selected experimentally in ChatGPT plan mode, with
-provider default reasoning; unsupported image/structured-output requests stop
-before game inputs. Paid API mode allows only the four priced profiles.
-Stop an existing run before switching models. The selected and returned model
-IDs are saved with the run; a dated snapshot of the selected alias is accepted.
-
-Upgrading from 0.3.0: follow [the upgrade steps](docs/windows.md#upgrading-an-existing-installation).
-Preserve `.gpt64` and `.venv`, replace the source files, and rerun setup.
-
-The API-key path is an explicit `--billing api` choice for both `api-check`
-and `serve`. Set `OPENAI_API_KEY` locally as described in the guide.
+Stop a run before changing models. Resume preserves a pending decision without
+asking the model again. See [the agent instructions](docs/agent.md).
 
 ## Timing and cost
 
@@ -131,15 +120,15 @@ emulator action is retried automatically.
 
 ## Logs and troubleshooting
 
-Default locations:
+Default Windows locations (under `%LOCALAPPDATA%/gpt64/data`):
 
 | Location | Contents |
 | --- | --- |
-| `.gpt64/bridge/` | Lua launcher, mailbox state, low-level screenshots/actions |
-| `.gpt64/runs/<run-id>/events.jsonl` | Ongoing timestamped decisions, inputs, observations, usage, errors |
-| `.gpt64/runs/<run-id>/screens/` | Screenshots used in that run |
-| `.gpt64/runs/<run-id>/api/` | API response/request IDs, status, usage, latency |
-| `.gpt64/runs/<run-id>/state.json` | Last dashboard state and dated pricing |
+| `bridge/` | Lua launcher, mailbox state, low-level screenshots/actions |
+| `runs/<run-id>/events.jsonl` | Ongoing timestamped decisions, inputs, observations, usage, errors |
+| `runs/<run-id>/screens/` | Screenshots used in that run |
+| `runs/<run-id>/api/` | API response/request IDs, status, usage, latency |
+| `runs/<run-id>/state.json` | Last dashboard state and dated pricing |
 
 Use **Saved runs** to inspect old sessions and **Download run ZIP** for a
 troubleshooting bundle. Records persist locally until you remove them. They
@@ -151,14 +140,14 @@ budget accounting, and recovery behavior.
 ## Development
 
 ```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+& "$env:LOCALAPPDATA\gpt64\runtime\Scripts\python.exe" -m unittest discover -s tests -v
 ```
 
 CI runs on Windows and Linux. Linux requires Lua 5.4 and executes the actual Lua
 bridge against a simulated BizHawk host. Authentication tests verify signed JWT claims, callback state/PKCE, refresh and
 protected credential storage. Agent tests mock OpenAI responses and
 verify pause/stop behavior, rejected actions, usage, budgets, and durable logs.
-HTTP tests exercise the dashboard demo, saved screenshots, and ZIP export.
+HTTP/MCP tests exercise real local transport, screenshots, duplicate/stale action rejection, pause/stop and ZIP export. Startup tests cover source changes, persistent settings, log migration and bridge reuse.
 These tests do not replace real emulator/API validation.
 
-ROMs, emulator binaries, save states, logs, and credentials are excluded from git.
+ROMs, emulator binaries, save states, logs, and credentials are excluded from git. Claude session history is managed by its native app.

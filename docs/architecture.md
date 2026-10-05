@@ -115,6 +115,33 @@ A plan admission/usage error stops the run; there is no billing/model fallback.
 The 10-decision UI default bounds request count, not token use per request.
 Eligibility and live sign-in/inference have not been validated on a real account.
 
+## Replaceable source and automatic startup
+
+The root CMD launchers invoke a stdlib bootstrap. A source hash decides whether
+to reinstall into a persistent runtime outside the checkout. CLI launch loads
+validated non-secret settings, remembers first-run file selections, starts
+EmuHawk with its ROM-last and `--lua` flags, and verifies a zero-frame screenshot.
+A live bridge is reused. Pending actions/client locks block startup; they are
+never reset or replayed implicitly. Old run records can be copied from `.gpt64`
+without copying mailbox state. The local loopback dashboard descriptor has its
+own control token, unrelated to provider credentials, and is excluded from exports.
+
+## Claude subscription through native MCP
+
+The official Claude client handles its own sign-in, model choice and inference.
+gpt64 supplies stdio MCP tools and opens an unmodified interactive client with
+only those game tools, no built-in filesystem/shell/network tools, and Mario
+instructions. No Claude OAuth or subscription inference adapter is implemented.
+The external game worker owns the bridge for the run. An act proposal must match
+the current observation ID and pass the same action/commentary validation.
+Pending/stale proposals are rejected, preventing replay after transport failures.
+The dashboard owns pause, stop, one-decision permits and the decision limit.
+Its stop cannot cancel Claude inference; the user interrupts the native app.
+Actual Claude model ID and usage are unavailable to this tool connection and
+marked unavailable; no API-dollar estimate is applied. End-to-end local transport
+is tested with mocked inference and a simulated emulator. Native Pro admission
+and real gameplay still need host testing.
+
 ## Observer and run records
 
 `runner.py` serializes emulator ownership, model requests, and actions in one

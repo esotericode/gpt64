@@ -1,18 +1,20 @@
 const $ = id => document.getElementById(id);
 let controlToken = '', live = null, archive = '', lastImage = '', busy = false, commandError = '', previousArchive = '';
-let selectedModel = '', catalogSignature = '', catalogRequest = false;
+let selectedModel = '', catalogSignature = '', catalogRequest = false, formInitialized = false;
 const terminal = new Set(['idle','error','stopped','completed','limit_reached','budget_reached']);
-const phaseNames = {idle:'Ready · emulator paused',observing:'Capturing a screenshot',starting:'Connecting to the emulator',checking_access:'Checking selected model catalog',counting_tokens:'Checking the next request budget',thinking:'Model thinking · game paused',acting:'Executing the input burst',paused:'Paused · next action held',stopping:'Stopping after in-flight work',stopped:'Stopped · emulator paused',completed:'Goal reported complete',limit_reached:'Decision limit reached',budget_reached:'Budget check stopped the run',error:'Run stopped with an error'};
+const phaseNames = {idle:'Ready · emulator paused',observing:'Capturing a screenshot',starting:'Connecting to the emulator',checking_access:'Checking selected model catalog',counting_tokens:'Checking the next request budget',waiting_external:'Waiting for Claude · game paused',thinking:'Model thinking · game paused',acting:'Executing the input burst',paused:'Paused · next action held',stopping:'Stopping after in-flight work',stopped:'Stopped · emulator paused',completed:'Goal reported complete',limit_reached:'Decision limit reached',budget_reached:'Budget check stopped the run',error:'Run stopped with an error'};
 const fmt = n => Number(n || 0).toLocaleString();
 function text(id, value) { $(id).textContent = value; }
 function render(s) {
   if (archive || previousArchive) { $('goal').value=s.goal || 'Enter Bob-omb Battlefield through its painting.'; $('budget').value=s.budget_usd; $('limit').value=s.max_steps; }
   previousArchive=archive;
   const u = s.usage;
+  const external = s.billing_mode==='claude';
   const plan = s.billing_mode==='chatgpt';
+  if(!formInitialized && !archive){const p=live?.preferences || s;$('goal').value=s.goal || p.goal || $('goal').value;$('limit').value=s.run_id ? s.max_steps : p.max_steps;$('budget').value=s.run_id ? s.budget_usd : p.budget_usd;formInitialized=true;}
   const auth = live?.auth || {ready:false,accounts:[],label:'Not signed in'};
   const catalog=live?.model_catalog || {status:'idle',models:[]};
-  if(!selectedModel || !terminal.has(live?.status))selectedModel=live?.model || s.model;
+  if(!selectedModel || (!terminal.has(live?.status) && !external))selectedModel=external ? (live?.preferences?.model || 'gpt-6.1-sol') : (live?.model || s.model);
   const signature=JSON.stringify([catalog,selectedModel,live?.billing_mode]);
   if(signature!==catalogSignature){
     catalogSignature=signature;$('models').replaceChildren();
@@ -20,25 +22,25 @@ function render(s) {
     catalog.models.forEach(m=>{const o=new Option(`${m.display_name} (${m.id})${m.profile_known?'':' · compatibility unverified'}`,m.id);o.disabled=!plan && !m.profile_known;$('models').append(o);});
     $('models').value=selectedModel;
   }
-  text('modelname',archive ? (s.actual_model || s.model) : !terminal.has(s.status) ? (s.actual_model || s.model) : selectedModel);
+  text('modelname',external ? 'Chosen in Claude Code' : archive ? (s.actual_model || s.model) : !terminal.has(s.status) ? (s.actual_model || s.model) : selectedModel);
   const chosen=catalog.models.find(m=>m.id===selectedModel);
   text('modelhint',catalog.error || (catalog.status==='loading' ? 'Reading your account’s model list; no inference is sent.' : catalog.status==='ready' ? chosen ? `${chosen.profile_known?'Vision profile configured.':'Experimental: provider default reasoning; image/JSON support will be checked on the first request.'} Use One decision to verify actual access.` : 'Choose a listed model. No automatic replacement or paid API fallback.' : 'Refresh models after signing in. Listing models does not run the game.'));
   text('status',s.status.replaceAll('_',' ').toUpperCase()); text('phase',phaseNames[s.status] || s.status);
   text('commentary',s.commentary); text('decisionlabel',s.decisions ? `Decision ${s.decisions}${s.pending_decision ? ' · pending' : ''}` : 'Public action summary');
-  text('cost',plan ? 'ChatGPT plan' : `$${Number(u.estimated_usd).toFixed(4)}`);
-  text('costlabel',plan ? 'Using ChatGPT plan or available credits' : s.demo ? 'Demo · no model usage' : 'Estimated API cost');
-  text('budgettext',plan ? 'Allowance and app limits are managed in ChatGPT settings' : `$${Number(s.budget_usd).toFixed(2)} budget estimate`);
-  $('budgetfield').hidden=$('budgettrack').hidden=plan;
-  text('usagehint',plan ? 'Tokens are recorded for this run. Remaining plan allowance and credit charges are shown in ChatGPT settings. No API-price dollar estimate applies.' : 'Token counts come from responses. Dollar estimates use dated standard rates; check OpenAI billing for final charges.');
-  $('usagelink').href=plan ? 'https://chatgpt.com/#settings/usage' : 'https://platform.openai.com/usage'; text('usagelink',plan ? 'Manage ChatGPT usage ↗' : 'Open API usage ↗');
+  text('cost',external ? 'Claude app' : plan ? 'ChatGPT plan' : `$${Number(u.estimated_usd).toFixed(4)}`);
+  text('costlabel',external ? 'Usage managed in the official Claude app' : plan ? 'Using ChatGPT plan or available credits' : s.demo ? 'Demo · no model usage' : 'Estimated API cost');
+  text('budgettext',external ? 'Game decision limit applies; check /usage in Claude' : plan ? 'Allowance and app limits are managed in ChatGPT settings' : `$${Number(s.budget_usd).toFixed(2)} budget estimate`);
+  $('budgetfield').hidden=$('budgettrack').hidden=plan || external;
+  text('usagehint',external ? 'The local game connection does not receive token counts, remaining allowance, cost, or actual model ID. Check /usage and /model in Claude; these values are unavailable here.' : plan ? 'Tokens are recorded for this run. Remaining plan allowance and credit charges are shown in ChatGPT settings. No API-price dollar estimate applies.' : 'Token counts come from responses. Dollar estimates use dated standard rates; check OpenAI billing for final charges.');
+  $('usagelink').href=external ? 'https://claude.ai/settings/usage' : plan ? 'https://chatgpt.com/#settings/usage' : 'https://platform.openai.com/usage'; text('usagelink',external ? 'Open Claude usage ↗' : plan ? 'Manage ChatGPT usage ↗' : 'Open API usage ↗');
   $('budgetbar').style.width = `${Math.min(100,100*u.estimated_usd/s.budget_usd)}%`;
-  text('inputtokens',fmt(u.input_tokens)); text('cachetokens',`${fmt(u.cached_tokens)} / ${fmt(u.cache_write_tokens)}`);
-  text('outputtokens',fmt(u.output_tokens)); text('reasoningtokens',fmt(u.reasoning_tokens));
+  text('inputtokens',external ? 'Unavailable' : fmt(u.input_tokens)); text('cachetokens',external ? '—' : `${fmt(u.cached_tokens)} / ${fmt(u.cache_write_tokens)}`);
+  text('outputtokens',external ? 'Unavailable' : fmt(u.output_tokens)); text('reasoningtokens',external ? '—' : fmt(u.reasoning_tokens));
   text('steps',`${s.decisions} / ${s.steps}`); text('latency',s.latency_seconds == null ? '—' : `${Number(s.latency_seconds).toFixed(1)} s`);
-  text('effort',`${!archive && terminal.has(s.status) && chosen && !chosen.profile_known ? 'provider default' : s.reasoning_effort} reasoning`); text('updated',`${archive ? 'Archived run · ' : ''}Updated ${new Date(s.updated).toLocaleTimeString()}`);
+  text('effort',external ? 'Managed by Claude' : `${!archive && terminal.has(s.status) && chosen && !chosen.profile_known ? 'provider default' : s.reasoning_effort} reasoning`); text('updated',`${archive ? 'Archived run · ' : ''}Updated ${new Date(s.updated).toLocaleTimeString()}`);
   $('reservation').hidden = !s.usage_unknown;
   text('reservation',plan ? 'A request may have consumed plan usage, but its outcome is unconfirmed. Check ChatGPT settings before another run.' : `Unconfirmed usage: up to $${Number(s.reserved_usd).toFixed(4)} reserved at standard rates. Check billing if the request failed.`);
-  const ready=plan ? auth.ready : s.key_present;
+  const ready=external || (plan ? auth.ready : s.key_present);
   $('banner').hidden = !s.demo && (ready || archive);
   text('banner',s.demo ? 'DEMO MODE — synthetic scene and scripted commentary. No Mario emulator or API calls.' : plan ? 'Continue with ChatGPT and grant plan usage. Observe works without signing in.' : 'Paid API mode. Set OPENAI_API_KEY locally before starting the server. Observe works without a key.');
   const errorMessage=commandError || s.error || live?.auth_error;
@@ -53,8 +55,10 @@ function render(s) {
   const stick = s.segments[0] || {x:0,y:0}; $('stickdot').setAttribute('cx',30+stick.x*20); $('stickdot').setAttribute('cy',30-stick.y*20); text('axis',`x ${stick.x} · y ${stick.y}`);
   const active = !terminal.has(s.status); const resumable = s.status==='paused';
   ['goal','budget','limit'].forEach(id => $(id).disabled=active || !!archive);
+  $('claudepanel').hidden=live?.billing_mode!=='claude';$('modelfields').hidden=external;
+  $('launchclaude').disabled=!!archive;
   const authBusy=live?.auth_status && live.auth_status!=='idle';
-  const modelBlocked=!s.demo && !resumable && (catalog.status==='loading' || (catalog.status==='ready' && (!chosen || (!plan && !chosen.profile_known))));
+  const modelBlocked=!external && !s.demo && !resumable && (catalog.status==='loading' || (catalog.status==='ready' && (!chosen || (!plan && !chosen.profile_known))));
   $('start').disabled=!!archive || (active && !resumable) || (!s.demo && !ready) || authBusy || modelBlocked; $('start').firstChild.textContent=resumable ? 'Resume run ' : 'Start run ';
   $('models').disabled=!!archive || active || authBusy || s.demo || catalog.status==='loading';
   $('refreshmodels').disabled=$('models').disabled || !ready || catalogRequest;
@@ -81,19 +85,20 @@ async function refresh(){
     let s=live;if(archive){const old=await fetch(`/api/runs/${archive}/state`);if(!old.ok)throw Error('Saved run unavailable');s=await old.json();}
     render(s);text('connection',archive?'Viewing saved run':'Connected locally');$('dot').classList.remove('off');
     const ready=live.billing_mode==='chatgpt' ? live.auth?.ready : live.key_present;
-    if(!archive && !live.demo && ready && !live.auth?.welcome && live.auth_status==='idle' && terminal.has(live.status) && live.model_catalog?.status==='idle' && !catalogRequest)requestCatalog();
+    if(!archive && !live.demo && live.billing_mode!=='claude' && ready && !live.auth?.welcome && live.auth_status==='idle' && terminal.has(live.status) && live.model_catalog?.status==='idle' && !catalogRequest)requestCatalog();
   }catch(e){text('connection',e.message);$('dot').classList.add('off');['start','step','observe','pause','stop'].forEach(id=>$(id).disabled=true);}finally{busy=false;}
 }
 async function command(name,extra={}){
   commandError='';
   $('error').hidden=true;
-  try{const r=await fetch(`/api/${name}`,{method:'POST',headers:{'Content-Type':'application/json','X-Gpt64-Control':controlToken},body:JSON.stringify({goal:$('goal').value,max_steps:Number($('limit').value),budget_usd:Number($('budget').value),model:selectedModel,...extra})});const d=await r.json();if(!r.ok)throw Error(d.error);await refresh();setTimeout(loadRuns,500);
+  try{const r=await fetch(`/api/${name}`,{method:'POST',headers:{'Content-Type':'application/json','X-Gpt64-Control':controlToken},body:JSON.stringify({goal:$('goal').value,max_steps:Number($('limit').value),budget_usd:Number($('budget').value),...(live?.billing_mode==='claude'?{}:{model:selectedModel}),...extra})});const d=await r.json();if(!r.ok)throw Error(d.error);await refresh();setTimeout(loadRuns,500);
   }catch(e){commandError=e.message;text('error',e.message);$('error').hidden=false;}
 }
 async function loadRuns(){try{const r=await fetch('/api/runs');const runs=await r.json();$('runs').replaceChildren(new Option('Live dashboard',''));runs.forEach(s=>$('runs').append(new Option(`${s.demo?'Demo · ':''}${s.goal.slice(0,35)} · ${s.steps} actions · ${s.status}`,s.run_id)));$('runs').value=archive;}catch{}}
 async function requestCatalog(){if(catalogRequest)return;catalogRequest=true;try{await command('models');}finally{catalogRequest=false;}}
 $('refreshmodels').addEventListener('click',requestCatalog);
-$('models').addEventListener('change',()=>{selectedModel=$('models').value;commandError='';if(live)render(live);});
+$('launchclaude').addEventListener('click',()=>command('claude/launch'));
+$('models').addEventListener('change',()=>{selectedModel=$('models').value;commandError='';if(live)render(live);command('preferences');});
 ['start','step','pause','stop','observe'].forEach(name=>$(name).addEventListener('click',()=>command(name)));
 $('login').addEventListener('click',()=>command('auth/login',{enable_plan:!live?.auth?.ready}));
 $('addaccount').addEventListener('click',()=>command('auth/login',{new:true}));
