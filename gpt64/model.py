@@ -232,7 +232,7 @@ class OpenAIClient:
         body = None if data is None else json.dumps(data).encode()
         req = request.Request("https://api.openai.com/v1/" + path, data=body,
                               headers={"Authorization": "Bearer " + self.key,
-                                       "Content-Type": "application/json", "User-Agent": "gpt64/0.4.1"})
+                                       "Content-Type": "application/json", "User-Agent": "gpt64/0.4.2"})
         try:
             with self.opener.open(req, timeout=self.timeout) as reply:
                 result = json.load(reply)
@@ -276,8 +276,14 @@ class OpenAIClient:
 
 
 def read_stream(reply):
-    """Read through the terminal SSE event; never expose reasoning deltas."""
+    """Wait for terminal usage and retain finalized public message events.
+
+    Some terminal envelopes omit output or contain an empty list. As in the
+    SDK, recover output_item.done messages instead of trusting partial deltas.
+    Keep no reasoning bodies, encrypted content, logprobs, or raw event trace.
+    """
     data, size = [], 0
+    completed, counts, stream_error = {}, {}, None
     for raw in reply:
         size += len(raw)
         if len(raw) > 4_000_000 or size > 64_000_000:
@@ -288,10 +294,45 @@ def read_stream(reply):
         elif not line and data:
             event = json.loads("\n".join(data)); data = []
             kind = event.get("type")
+            name = kind if isinstance(kind, str) and re.fullmatch(r"[a-zA-Z0-9_.]{1,100}", kind) else "other"
+            if name not in counts and len(counts) >= 64:
+                name = "other"
+            counts[name] = counts.get(name, 0) + 1
+            if kind == "response.output_item.done":
+                item = event.get("item")
+                if isinstance(item, dict) and item.get("type") == "message":
+                    index = event.get("output_index")
+                    if type(index) is not int or not 0 <= index <= 1024 or len(completed) >= 64 and index not in completed:
+                        stream_error = "invalid_completed_item"
+                        continue
+                    # Only these public message fields participate in parsing.
+                    message = {k: item[k] for k in ("id", "type", "role", "phase", "status") if k in item}
+                    parts = item.get("content")
+                    message["content"] = [
+                        {k: part[k] for k in ("type", "text", "refusal") if k in part} if isinstance(part, dict) else None
+                        for part in parts] if isinstance(parts, list) else None
+                    # The done event alone is not permission to execute an item
+                    # whose own status is missing or incomplete.
+                    if item.get("status") != "completed":
+                        stream_error = "incomplete_completed_item"
+                    if index in completed and completed[index] != message:
+                        stream_error = "conflicting_completed_items"
+                    else:
+                        completed[index] = message
             if kind in ("response.completed", "response.failed", "response.incomplete"):
                 response = event.get("response")
                 if not isinstance(response, dict):
                     raise ModelError("Response stream returned no terminal response")
+                output = response.get("output")
+                source = "terminal"
+                if output is None or output == []:
+                    source = "completed_events" if completed else "none"
+                    response["output"] = [completed[index] for index in sorted(completed)]
+                response["_stream_diagnostics"] = {
+                    "event_counts": counts, "completed_message_count": len(completed),
+                    "terminal_output_count": len(output) if isinstance(output, list) else None,
+                    "terminal_output_missing": output is None, "output_source": source,
+                    "error": stream_error}
                 return response
             if kind == "error":
                 code = event.get("code", "unknown_error")
@@ -329,7 +370,7 @@ class PlanClient(OpenAIClient):
         body.update(store=False, stream=True)
         req = request.Request("https://api.openai.com/v1/responses", data=json.dumps(body).encode(),
                               headers={"Authorization": "Bearer " + self.key, "Content-Type": "application/json",
-                                       "Accept": "text/event-stream", "User-Agent": "gpt64/0.4.1"})
+                                       "Accept": "text/event-stream", "User-Agent": "gpt64/0.4.2"})
         try:
             with self.opener.open(req, timeout=self.timeout) as reply:
                 result = read_stream(reply)
@@ -400,6 +441,13 @@ def response_diagnostics(response, model=MODEL):
     def label(value):
         return value if isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", value) else None
     result = {"selected_model": model, "output_items": []}
+    stream = response.get("_stream_diagnostics")
+    if isinstance(stream, dict):
+        # This metadata is produced locally by read_stream, not a raw trace.
+        result["stream"] = {k: stream.get(k) for k in ("completed_message_count", "terminal_output_count",
+                              "terminal_output_missing", "output_source", "error")}
+        result["stream"]["event_counts"] = {k: v for k, v in (stream.get("event_counts") or {}).items()
+                                           if label(k) and type(v) is int and v >= 0}
     output = response.get("output")
     if isinstance(output, list):
         for item in output[:64]:
@@ -438,6 +486,8 @@ def parse_response(response, model=MODEL):
         code = details.get("provider_error_code") or details.get("incomplete_reason")
         raise ResponseError("incomplete_response", "Model response was incomplete or failed" +
                             (f". Code: {code}. For plan limits, open ChatGPT Settings > Usage" if code else ""))
+    if (response.get("_stream_diagnostics") or {}).get("error"):
+        raise ResponseError("invalid_stream", "Stream contained incomplete or conflicting finalized messages")
     text = decision_text(decision_message(response))
     try:
         value = json.loads(text)

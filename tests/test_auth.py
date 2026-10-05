@@ -145,7 +145,105 @@ class StreamTest(unittest.TestCase):
         final = {"status": "completed", "model": MODEL, "output": [], "usage": {}}
         result = read_stream(self.stream({"type": "response.output_text.delta", "delta": "partial"},
                                         {"type": "response.completed", "response": final}))
-        self.assertEqual(result, final)
+        self.assertEqual(result["output"], [])
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(result["_stream_diagnostics"]["output_source"], "none")
+        self.assertEqual(result["_stream_diagnostics"]["event_counts"]["response.output_text.delta"], 1)
+
+    def message(self, phase="final_answer"):
+        decision = {"commentary": "Mario is at the menu, so I will press Start.", "memory": "Menu.", "done": False,
+                    "segments": [{"frames": 4, "x": 0, "y": 0, "buttons": ["Start"]}]}
+        return {"id": "msg-test", "type": "message", "role": "assistant", "status": "completed", "phase": phase,
+                "content": [{"type": "output_text", "text": json.dumps(decision)}]}
+
+    def envelope(self, status="completed"):
+        # Shape and counts from the user's GPT-6 Astra failure: completed,
+        # json_schema, nonzero usage, but no output in the terminal event.
+        return {"model": "gpt-6-astra", "status": status, "output": [], "text": {"format": {"type": "json_schema"}},
+                "usage": {"input_tokens": 634, "output_tokens": 66, "output_tokens_details": {"reasoning_tokens": 0}}}
+
+    def test_finalized_items_recover_missing_null_or_empty_terminal_output(self):
+        for output in ("missing", None, []):
+            final = self.envelope()
+            if output == "missing":
+                final.pop("output")
+            else:
+                final["output"] = output
+            message = self.message()
+            message["content"][0]["logprobs"] = "PRIVATE_LOGPROBS"
+            message["content"][0]["annotations"] = "PRIVATE_ANNOTATIONS"
+            message["encrypted_content"] = "PRIVATE_ENCRYPTED"
+            result = read_stream(self.stream(
+                {"type": "response.output_item.done", "output_index": 0, "item": {"type": "reasoning", "content": "PRIVATE_REASONING"}},
+                {"type": "response.output_item.done", "output_index": 1, "item": message},
+                {"type": "response.completed", "response": final}))
+            with self.subTest(output=output):
+                self.assertEqual(parse_response(result, "gpt-6-astra").segments[0].buttons, ("Start",))
+                self.assertEqual(result["usage"], final["usage"])
+                self.assertEqual(result["_stream_diagnostics"]["output_source"], "completed_events")
+                self.assertEqual(result["_stream_diagnostics"]["completed_message_count"], 1)
+                self.assertNotIn("PRIVATE_", json.dumps(result))
+
+    def test_finalized_items_keep_phase_refusal_and_index_order(self):
+        commentary = self.message("commentary")
+        commentary["content"][0]["text"] = "I will inspect the scene."
+        result = read_stream(self.stream(
+            {"type": "response.output_item.done", "output_index": 3, "item": self.message()},
+            {"type": "response.output_item.done", "output_index": 1, "item": commentary},
+            {"type": "response.completed", "response": self.envelope()}))
+        self.assertEqual([m["phase"] for m in result["output"]], ["commentary", "final_answer"])
+        self.assertEqual(parse_response(result, "gpt-6-astra").segments[0].frames, 4)
+        refusal = self.message(); refusal["content"] = [{"type": "refusal", "refusal": "declined"}]
+        result = read_stream(self.stream({"type": "response.output_item.done", "output_index": 0, "item": refusal},
+                                        {"type": "response.completed", "response": self.envelope()}))
+        with self.assertRaisesRegex(ModelError, "declined"):
+            parse_response(result, "gpt-6-astra")
+
+    def test_terminal_output_is_authoritative_and_items_are_not_appended_twice(self):
+        final = self.envelope(); final["output"] = [self.message()]
+        result = read_stream(self.stream(
+            {"type": "response.output_item.done", "output_index": 0, "item": self.message()},
+            {"type": "response.output_item.done", "output_index": 0, "item": self.message()},
+            {"type": "response.completed", "response": final}))
+        self.assertEqual(len(result["output"]), 1)
+        self.assertEqual(result["_stream_diagnostics"]["output_source"], "terminal")
+        self.assertEqual(parse_response(result, "gpt-6-astra").segments[0].frames, 4)
+
+    def test_deltas_or_text_done_without_a_finalized_message_cannot_execute(self):
+        text = self.message()["content"][0]["text"]
+        result = read_stream(self.stream(
+            {"type": "response.output_text.delta", "delta": text},
+            {"type": "response.output_text.done", "text": text},
+            {"type": "response.completed", "response": self.envelope()}))
+        with self.assertRaisesRegex(ModelError, "no final answer"):
+            parse_response(result, "gpt-6-astra")
+        with self.assertRaisesRegex(ModelError, "terminal response"):
+            read_stream(self.stream({"type": "response.output_item.done", "output_index": 0, "item": self.message()}))
+
+    def test_conflicting_or_incomplete_done_items_stop_after_accounting(self):
+        conflicting = self.message(); conflicting["content"][0]["text"] = "different"
+        incomplete = self.message(); incomplete["status"] = "in_progress"
+        for events, code in (([
+                {"type": "response.output_item.done", "output_index": 0, "item": self.message()},
+                {"type": "response.output_item.done", "output_index": 0, "item": conflicting}], "conflicting_completed_items"),
+                ([{"type": "response.output_item.done", "output_index": 0, "item": incomplete}], "incomplete_completed_item"),
+                ([{"type": "response.output_item.done", "output_index": True, "item": self.message()}], "invalid_completed_item")):
+            result = read_stream(self.stream(*events, {"type": "response.completed", "response": self.envelope()}))
+            self.assertEqual(result["usage"]["output_tokens"], 66)
+            self.assertEqual(result["_stream_diagnostics"]["error"], code)
+            with self.assertRaises(ModelError) as failure:
+                parse_response(result, "gpt-6-astra")
+            self.assertEqual(failure.exception.code, "invalid_stream")
+
+    def test_finalized_message_does_not_override_failed_or_incomplete_terminal_status(self):
+        for status in ("failed", "incomplete"):
+            result = read_stream(self.stream(
+                {"type": "response.output_item.done", "output_index": 0, "item": self.message()},
+                {"type": "response." + status, "response": self.envelope(status)}))
+            self.assertEqual(result["usage"]["output_tokens"], 66)
+            with self.assertRaises(ModelError) as failure:
+                parse_response(result, "gpt-6-astra")
+            self.assertEqual(failure.exception.code, "incomplete_response")
 
     def test_streamed_commentary_is_separate_from_the_final_decision(self):
         decision = {"commentary": "Mario is at the menu, so I will press Start.", "memory": "Menu.", "done": False,
@@ -163,7 +261,10 @@ class StreamTest(unittest.TestCase):
 
     def test_failed_terminal_keeps_usage_for_accounting(self):
         final = {"status": "failed", "error": {"code": "subscription_sharing_usage_limit_exceeded"}, "usage": {"input_tokens": 100}}
-        self.assertEqual(read_stream(self.stream({"type": "response.failed", "response": final})), final)
+        result = read_stream(self.stream({"type": "response.failed", "response": final}))
+        self.assertEqual(result["usage"], final["usage"])
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["error"], final["error"])
 
     def test_plan_request_omits_api_only_fields_and_requires_exact_available_model(self):
         store = unittest.mock.Mock()

@@ -56,6 +56,16 @@ override, and must accept screenshot input and the JSON schema before any inputs
 The default ChatGPT plan path uses the documented local-app OAuth flow,
 `store:false` and `stream:true`. It omits unsupported output-cap and service-tier
 fields and requires a terminal SSE event before parsing/executing an answer.
+The stream reader retains allowlisted public messages from
+`response.output_item.done` and uses them if the terminal envelope has missing,
+null or empty output. A nonempty terminal output remains authoritative. Completed
+items are deduplicated by output index and ordered by index; conflicting items
+or incomplete message status stop execution after terminal usage is recorded.
+Neither text deltas nor `response.output_text.done` alone can authorize an input,
+and even a complete message cannot execute without a completed terminal response.
+Stream diagnostics record only event counts and recovery metadata, never raw
+event traces or reasoning bodies. This follows the official SDK's finalized-item
+recovery approach, extended to empty terminal output lists.
 The selected model must be in the selected account's live catalog. Catalog parsing
 supports plan `models`/`slug` and API `data`/`id` shapes, preserves order, and omits
 hidden entries. Listing is read-only and does not prove inference admission.
