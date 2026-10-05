@@ -1,4 +1,4 @@
-# What GPT-6.1 SOL is told
+# What the selected model is told
 
 Yes: the application sends an explicit Mario 64 instruction block **on every
 turn**, in the Responses API `instructions` field. The exact text is
@@ -8,8 +8,10 @@ turn**, in the Responses API `instructions` field. The exact text is
 .\.venv\Scripts\python.exe -m gpt64 instructions
 ```
 
-Your setup work does not train or fine-tune a new model. This selects the exact
-`gpt-6.1-sol` model and supplies its task and controls with each request.
+Your setup work does not train or fine-tune a new model. The application supplies
+the selected model ID, task and controls with each request. The initial ID is
+`gpt-6.1-sol`; use the account-specific model picker or `serve --model MODEL_ID`
+to choose another. These Mario instructions and action limits apply to every model.
 
 ## Its task and observations
 

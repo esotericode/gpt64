@@ -1,4 +1,4 @@
-"""GPT-6.1 Sol vision decisions through the official Responses API."""
+"""Explicitly selected vision models through the official Responses API."""
 
 import base64
 from dataclasses import asdict, dataclass
@@ -11,8 +11,14 @@ from urllib import error, request
 from .actions import BUTTONS, Segment, validate_sequence
 
 MODEL = "gpt-6.1-sol"
-PRICING_DATE = "2026-10-04"
+PRICING_DATE = "2026-10-05"
 RATES = {"input": 2.0, "cached": 0.1, "cache_write": 2.5, "output": 10.0}
+MODEL_RATES = {
+    MODEL: RATES,
+    "gpt-6-sol": {"input": 2.0, "cached": 0.2, "cache_write": 2.5, "output": 10.0},
+    "gpt-6-luna": {"input": 0.1, "cached": 0.01, "cache_write": 0.125, "output": 0.5},
+    "gpt-6-astra": {"input": 10.0, "cached": 1.0, "cache_write": 12.5, "output": 50.0},
+}
 MAX_OUTPUT = 4096
 
 INSTRUCTIONS = """You play Super Mario 64 using only screenshots and your own executed
@@ -52,6 +58,49 @@ SCHEMA = {
 
 class ModelError(RuntimeError):
     pass
+
+
+def model_id(value):
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,99}", value):
+        raise ValueError("Invalid model ID; use an ID from your account's model list")
+    return value
+
+
+def model_rates(model):
+    rates = MODEL_RATES.get(model_id(model))
+    if rates is None:
+        raise ModelError("Paid API mode requires a model with verified pricing: " + ", ".join(MODEL_RATES))
+    return rates
+
+
+def model_catalog(value):
+    """Normalize plan and API catalogs without exposing raw provider metadata."""
+    entries = value.get("models", value.get("data"))
+    if not isinstance(entries, list):
+        raise ModelError("Unrecognized model catalog response. Refresh models or sign in again; no inference was sent.")
+    models, seen = [], set()
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise ModelError("Malformed model catalog entry; no inference was sent")
+        if entry.get("visibility", "list") != "list":
+            continue
+        try:
+            slug = model_id(entry.get("slug", entry.get("id")))
+        except ValueError:
+            raise ModelError("Malformed model ID in catalog; no inference was sent") from None
+        if slug in seen:
+            continue
+        seen.add(slug)
+        label = entry.get("display_name") or slug
+        if not isinstance(label, str):
+            label = slug
+        models.append({"id": slug, "display_name": label[:160], "profile_known": slug in MODEL_RATES})
+    return models
+
+
+def response_model_matches(actual, selected):
+    return isinstance(actual, str) and (actual == selected or
+        re.fullmatch(re.escape(selected) + r"-\d{4}-\d{2}-\d{2}", actual) is not None)
 
 
 def brief_commentary(text):
@@ -97,7 +146,8 @@ class Decision:
                 "segments": [asdict(s) for s in self.segments]}
 
 
-def payload(goal, images, history, memory, effort="medium"):
+def payload(goal, images, history, memory, effort="medium", model=MODEL):
+    model_id(model)
     if not isinstance(goal, str) or not 1 <= len(goal.strip()) <= 1500:
         raise ValueError("Goal must be 1–1500 characters")
     if effort not in ("low", "medium", "high", "xhigh", "max"):
@@ -111,13 +161,16 @@ def payload(goal, images, history, memory, effort="medium"):
         content.append({"type": "input_image", "image_url": "data:image/png;base64," + base64.b64encode(data).decode(), "detail": "high"})
     if len(content) < 2:
         raise ModelError("At least one screenshot is required")
-    return {"model": MODEL, "instructions": INSTRUCTIONS, "input": [{"role": "user", "content": content}],
-            "reasoning": {"effort": effort}, "max_output_tokens": MAX_OUTPUT, "store": False,
+    body = {"model": model, "instructions": INSTRUCTIONS, "input": [{"role": "user", "content": content}],
+            "max_output_tokens": MAX_OUTPUT, "store": False,
             "service_tier": "default", "text": {"format": {
                 "type": "json_schema", "name": "mario_decision", "strict": True, "schema": SCHEMA}}}
+    if model in MODEL_RATES:
+        body["reasoning"] = {"effort": effort}
+    return body
 
 
-def usage_summary(response):
+def usage_summary(response, model=MODEL, api_pricing=True):
     usage = response.get("usage")
     if not isinstance(usage, dict):
         raise ModelError("API returned no usage; charge is unknown, so the run stops")
@@ -132,18 +185,22 @@ def usage_summary(response):
     reasoning = count(usage.get("output_tokens_details") or {}, "reasoning_tokens", 0)
     if cached + writes > inp or reasoning > out:
         raise ModelError("Inconsistent API token counts")
-    cost = ((inp - cached - writes) * RATES["input"] + cached * RATES["cached"] +
-            writes * RATES["cache_write"] + out * RATES["output"]) / 1_000_000
+    cost = 0
+    if api_pricing:
+        rates = model_rates(model)
+        cost = ((inp - cached - writes) * rates["input"] + cached * rates["cached"] +
+                writes * rates["cache_write"] + out * rates["output"]) / 1_000_000
     # output_tokens already includes reasoning tokens. Never add them twice.
     return {"input_tokens": inp, "output_tokens": out, "cached_tokens": cached,
             "cache_write_tokens": writes, "reasoning_tokens": reasoning,
             "total_tokens": inp + out, "estimated_usd": cost}
 
 
-def reserve_cost(input_tokens):
+def reserve_cost(input_tokens, model=MODEL):
     if type(input_tokens) is not int or not 1 <= input_tokens <= 100_000:
         raise ModelError("Input token count is invalid or exceeds the 100,000-token cap")
-    return (input_tokens * RATES["cache_write"] + MAX_OUTPUT * RATES["output"]) / 1_000_000
+    rates = model_rates(model)
+    return (input_tokens * max(rates["input"], rates["cache_write"]) + MAX_OUTPUT * rates["output"]) / 1_000_000
 
 
 class NoRedirect(request.HTTPRedirectHandler):
@@ -153,7 +210,8 @@ class NoRedirect(request.HTTPRedirectHandler):
 
 class OpenAIClient:
     billing_mode = "api"
-    def __init__(self, key=None, timeout=120):
+    def __init__(self, key=None, timeout=120, model=MODEL):
+        self.model = model_id(model)
         self.key = key or os.environ.get("OPENAI_API_KEY", "")
         if not self.key:
             raise ModelError("OPENAI_API_KEY is missing. Set it in the PowerShell window that starts gpt64.")
@@ -164,7 +222,7 @@ class OpenAIClient:
         body = None if data is None else json.dumps(data).encode()
         req = request.Request("https://api.openai.com/v1/" + path, data=body,
                               headers={"Authorization": "Bearer " + self.key,
-                                       "Content-Type": "application/json", "User-Agent": "gpt64/0.2"})
+                                       "Content-Type": "application/json", "User-Agent": "gpt64/0.3.1"})
         try:
             with self.opener.open(req, timeout=self.timeout) as reply:
                 result = json.load(reply)
@@ -174,7 +232,7 @@ class OpenAIClient:
                 return result
         except error.HTTPError as e:
             hints = {401: "Check your local API key", 403: "Check project/model permissions",
-                     404: "The exact gpt-6.1-sol model or endpoint is unavailable to this account",
+                     404: "The selected model or endpoint is unavailable to this account; refresh the model list",
                      429: "Check API credit, limits, and rate limits"}
             if self.billing_mode == "chatgpt":
                 hints.update({401: "Continue with ChatGPT again and grant plan usage", 403: "Check ChatGPT account eligibility, region and model permissions",
@@ -187,16 +245,20 @@ class OpenAIClient:
                              "A generation request may have incurred usage.") from None
 
     def check(self):
-        value = self._send("models/" + MODEL)
-        if value.get("id") != MODEL:
+        model_rates(self.model)
+        value = self._send("models/" + self.model)
+        if value.get("id") != self.model:
             raise ModelError("Model check did not return the requested model")
-        return MODEL
+        return self.model
+
+    def models(self):
+        return model_catalog(self._send("models"))
 
     def count(self, body):
         # Token counting supports the same input and output schema context.
-        value = self._send("responses/input_tokens", {k: body[k] for k in ("model", "instructions", "input", "text", "reasoning")})
+        value = self._send("responses/input_tokens", {k: body[k] for k in ("model", "instructions", "input", "text", "reasoning") if k in body})
         tokens = value.get("input_tokens")
-        reserve_cost(tokens)
+        reserve_cost(tokens, self.model)
         return tokens
 
     def generate(self, body):
@@ -231,7 +293,8 @@ def read_stream(reply):
 class PlanClient(OpenAIClient):
     billing_mode = "chatgpt"
 
-    def __init__(self, store=None, timeout=120):
+    def __init__(self, store=None, timeout=120, model=MODEL):
+        self.model = model_id(model)
         from .auth import AuthStore
         self.store = store or AuthStore()
         self.client_id, self.key = self.store.access_token()
@@ -239,12 +302,16 @@ class PlanClient(OpenAIClient):
         self.opener = request.build_opener(NoRedirect)
 
     def check(self):
+        models = self.models()
+        if not any(m["id"] == self.model for m in models):
+            available = ", ".join(m["id"] for m in models[:30]) or "none"
+            raise ModelError(f"This ChatGPT account does not list {self.model}. Available: {available}. "
+                             "Choose a listed model in Run controls or use serve --model MODEL_ID. No paid API fallback was selected.")
+        return self.model
+
+    def models(self):
         self.client_id, self.key = self.store.access_token(self.client_id)
-        value = self._send("models")
-        models = value.get("models", [])
-        if not any(m.get("slug") == MODEL and m.get("visibility") == "list" for m in models):
-            raise ModelError("This ChatGPT account does not offer gpt-6.1-sol. No replacement model or paid API fallback was selected.")
-        return MODEL
+        return super().models()
 
     def generate(self, body):
         self.client_id, self.key = self.store.access_token(self.client_id)
@@ -252,7 +319,7 @@ class PlanClient(OpenAIClient):
         body.update(store=False, stream=True)
         req = request.Request("https://api.openai.com/v1/responses", data=json.dumps(body).encode(),
                               headers={"Authorization": "Bearer " + self.key, "Content-Type": "application/json",
-                                       "Accept": "text/event-stream", "User-Agent": "gpt64/0.3"})
+                                       "Accept": "text/event-stream", "User-Agent": "gpt64/0.3.1"})
         try:
             with self.opener.open(req, timeout=self.timeout) as reply:
                 result = read_stream(reply)
@@ -274,9 +341,9 @@ class PlanClient(OpenAIClient):
             raise ModelError("ChatGPT stream failed or timed out; plan usage may have occurred. No retry or paid API fallback.") from None
 
 
-def parse_response(response):
-    if response.get("model") != MODEL:
-        raise ModelError("API returned an unexpected model; no fallback is allowed")
+def parse_response(response, model=MODEL):
+    if not response_model_matches(response.get("model"), model):
+        raise ModelError("Provider returned an unexpected model; no action was executed")
     if response.get("status") != "completed":
         code = (response.get("error") or {}).get("code", "")
         safe = code if isinstance(code, str) and re.fullmatch(r"[a-zA-Z0-9_]{1,100}", code) else ""

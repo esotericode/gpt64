@@ -11,13 +11,21 @@
    BizHawk, pause, load that script in Lua Console, then run doctor and smoke.
 5. Run **start.cmd**. In the dashboard choose **Continue with ChatGPT** and grant
    plan usage on the official OpenAI sign-in page. Check your app limits in
-   ChatGPT Settings > Usage, then choose **One decision**.
+   ChatGPT Settings > Usage. In Run controls choose **Refresh models**, select a
+   listed **Agent model**, then choose **One decision**. Try `gpt-6-sol` first if
+   it appears, then `gpt-6-luna`.
 
-The default uses eligible ChatGPT plan access. Plus eligibility and GPT-6.1 SOL
-availability must be checked on your account. The app never switches to paid
+The default uses eligible ChatGPT plan access and initially selects GPT-6.1 Sol.
+You can explicitly choose another model your account lists. Catalog access does
+not guarantee an admitted inference request. The app never switches to paid
 API billing automatically. A separate API-key path is documented as an optional
 choice. Keep keys and ROMs on your PC; do not send them to chat.
 
 The model receives Mario-specific instructions on every turn. See
 [what the agent is told](docs/agent.md). Live emulator play and account-specific
 sign-in/inference still need validation on your computer.
+
+Already installed 0.3.0? Stop the server and Lua script, replace the source files
+in the same project folder, preserve `.gpt64` and `.venv`, rerun setup-windows.cmd,
+then reload the Lua launcher and start.cmd. Your saved sign-in lives separately
+and is retained. See [upgrade details](docs/windows.md#upgrading-an-existing-installation).

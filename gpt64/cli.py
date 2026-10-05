@@ -54,8 +54,12 @@ def main(argv=None):
     dashboard.add_argument("--demo", action="store_true", help="Synthetic UI demo, no emulator or API requests")
     dashboard.add_argument("--reasoning", choices=("low", "medium", "high", "xhigh", "max"), default="medium")
     dashboard.add_argument("--billing", choices=("chatgpt", "api"), default="chatgpt", help="ChatGPT plan by default; paid API is an explicit choice")
-    check = commands.add_parser("api-check", help="Read-only check of exact gpt-6.1-sol access")
+    dashboard.add_argument("--model", default="gpt-6.1-sol", help="Explicit model ID; the dashboard also has a model picker")
+    check = commands.add_parser("api-check", help="Read-only metadata check; does not verify inference admission")
     check.add_argument("--billing", choices=("chatgpt", "api"), default="chatgpt")
+    check.add_argument("--model", default="gpt-6.1-sol")
+    models = commands.add_parser("models", help="List the selected account's model catalog without inference or emulator actions")
+    models.add_argument("--billing", choices=("chatgpt", "api"), default="chatgpt")
     login = commands.add_parser("login", help="Continue with ChatGPT in your system browser")
     login.add_argument("--new", action="store_true", help="Register another account/workspace")
     login.add_argument("--enable-plan", action="store_true", help="Explicitly ask again for ChatGPT plan permission")
@@ -88,16 +92,21 @@ def main(argv=None):
             else:
                 print(json.dumps(store.public(), indent=2))
             return 0
-        if args.command == "api-check":
+        if args.command in ("api-check", "models"):
             from .model import OpenAIClient, PlanClient
-            client = PlanClient() if args.billing == "chatgpt" else OpenAIClient()
-            print(f"{args.billing} model access verified: {client.check()}. No generation request was sent.")
+            selected = getattr(args, "model", "gpt-6.1-sol")
+            client = PlanClient(model=selected) if args.billing == "chatgpt" else OpenAIClient(model=selected)
+            if args.command == "models":
+                print(json.dumps(client.models(), indent=2, ensure_ascii=False))
+                print("Catalog only; no inference or emulator action was sent. Try One decision to verify admission and compatibility.")
+            else:
+                print(f"{args.billing} catalog/metadata lists: {client.check()}. No generation was sent; inference admission is unverified.")
             return 0
         if args.command == "serve":
             from .server import serve
             if not 0 <= args.port <= 65535:
                 raise ValueError("Port must be between 0 and 65535")
-            serve(args.bridge, args.runs, args.port, args.demo, args.reasoning, args.billing)
+            serve(args.bridge, args.runs, args.port, args.demo, args.reasoning, args.billing, args.model)
             return 0
         if args.command == "init":
             print(f"Open this script in BizHawk's Lua Console:\n{initialize(args.bridge, args.reset)}")

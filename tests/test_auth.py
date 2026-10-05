@@ -172,3 +172,17 @@ class StreamTest(unittest.TestCase):
         self.assertNotIn("max_output_tokens", body)
         self.assertNotIn("service_tier", body)
         self.assertEqual(body["model"], MODEL)
+
+    def test_plan_catalog_can_select_an_alternative_and_error_lists_choices(self):
+        store = unittest.mock.Mock()
+        store.access_token.return_value = ("oaiapp_test", "PLAN_SECRET")
+        client = PlanClient(store, model="gpt-6-sol")
+        with patch.object(client, "_send", return_value={"data": [{"id": "gpt-6-sol"}, {"id": "gpt-6-luna"}]}) as send:
+            self.assertEqual(client.check(), "gpt-6-sol")
+            self.assertEqual(send.call_args.args, ("models",))
+        with patch.object(client, "_send", return_value={"models": [{"slug": "gpt-6-luna", "visibility": "list"}]}):
+            with self.assertRaisesRegex(ModelError, "Available: gpt-6-luna"):
+                client.check()
+        with patch.object(client, "_send", return_value={"unexpected": []}):
+            with self.assertRaisesRegex(ModelError, "Unrecognized model catalog"):
+                client.check()

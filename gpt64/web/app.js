@@ -1,7 +1,8 @@
 const $ = id => document.getElementById(id);
 let controlToken = '', live = null, archive = '', lastImage = '', busy = false, commandError = '', previousArchive = '';
+let selectedModel = '', catalogSignature = '', catalogRequest = false;
 const terminal = new Set(['idle','error','stopped','completed','limit_reached','budget_reached']);
-const phaseNames = {idle:'Ready · emulator paused',observing:'Capturing a screenshot',starting:'Connecting to the emulator',checking_access:'Checking GPT-6.1 SOL access',counting_tokens:'Checking the next request budget',thinking:'Model thinking · game paused',acting:'Executing the input burst',paused:'Paused · next action held',stopping:'Stopping after in-flight work',stopped:'Stopped · emulator paused',completed:'Goal reported complete',limit_reached:'Decision limit reached',budget_reached:'Budget check stopped the run',error:'Run stopped with an error'};
+const phaseNames = {idle:'Ready · emulator paused',observing:'Capturing a screenshot',starting:'Connecting to the emulator',checking_access:'Checking selected model catalog',counting_tokens:'Checking the next request budget',thinking:'Model thinking · game paused',acting:'Executing the input burst',paused:'Paused · next action held',stopping:'Stopping after in-flight work',stopped:'Stopped · emulator paused',completed:'Goal reported complete',limit_reached:'Decision limit reached',budget_reached:'Budget check stopped the run',error:'Run stopped with an error'};
 const fmt = n => Number(n || 0).toLocaleString();
 function text(id, value) { $(id).textContent = value; }
 function render(s) {
@@ -10,6 +11,18 @@ function render(s) {
   const u = s.usage;
   const plan = s.billing_mode==='chatgpt';
   const auth = live?.auth || {ready:false,accounts:[],label:'Not signed in'};
+  const catalog=live?.model_catalog || {status:'idle',models:[]};
+  if(!selectedModel || !terminal.has(live?.status))selectedModel=live?.model || s.model;
+  const signature=JSON.stringify([catalog,selectedModel,live?.billing_mode]);
+  if(signature!==catalogSignature){
+    catalogSignature=signature;$('models').replaceChildren();
+    if(!catalog.models.some(m=>m.id===selectedModel))$('models').append(new Option(`${selectedModel} · ${catalog.status==='ready'?'not listed':'not checked'}`,selectedModel));
+    catalog.models.forEach(m=>{const o=new Option(`${m.display_name} (${m.id})${m.profile_known?'':' · compatibility unverified'}`,m.id);o.disabled=!plan && !m.profile_known;$('models').append(o);});
+    $('models').value=selectedModel;
+  }
+  text('modelname',archive ? (s.actual_model || s.model) : !terminal.has(s.status) ? (s.actual_model || s.model) : selectedModel);
+  const chosen=catalog.models.find(m=>m.id===selectedModel);
+  text('modelhint',catalog.error || (catalog.status==='loading' ? 'Reading your account’s model list; no inference is sent.' : catalog.status==='ready' ? chosen ? `${chosen.profile_known?'Vision profile configured.':'Experimental: provider default reasoning; image/JSON support will be checked on the first request.'} Use One decision to verify actual access.` : 'Choose a listed model. No automatic replacement or paid API fallback.' : 'Refresh models after signing in. Listing models does not run the game.'));
   text('status',s.status.replaceAll('_',' ').toUpperCase()); text('phase',phaseNames[s.status] || s.status);
   text('commentary',s.commentary); text('decisionlabel',s.decisions ? `Decision ${s.decisions}${s.pending_decision ? ' · pending' : ''}` : 'Public action summary');
   text('cost',plan ? 'ChatGPT plan' : `$${Number(u.estimated_usd).toFixed(4)}`);
@@ -22,13 +35,13 @@ function render(s) {
   text('inputtokens',fmt(u.input_tokens)); text('cachetokens',`${fmt(u.cached_tokens)} / ${fmt(u.cache_write_tokens)}`);
   text('outputtokens',fmt(u.output_tokens)); text('reasoningtokens',fmt(u.reasoning_tokens));
   text('steps',`${s.decisions} / ${s.steps}`); text('latency',s.latency_seconds == null ? '—' : `${Number(s.latency_seconds).toFixed(1)} s`);
-  text('effort',`${s.reasoning_effort} reasoning`); text('updated',`${archive ? 'Archived run · ' : ''}Updated ${new Date(s.updated).toLocaleTimeString()}`);
+  text('effort',`${!archive && terminal.has(s.status) && chosen && !chosen.profile_known ? 'provider default' : s.reasoning_effort} reasoning`); text('updated',`${archive ? 'Archived run · ' : ''}Updated ${new Date(s.updated).toLocaleTimeString()}`);
   $('reservation').hidden = !s.usage_unknown;
   text('reservation',plan ? 'A request may have consumed plan usage, but its outcome is unconfirmed. Check ChatGPT settings before another run.' : `Unconfirmed usage: up to $${Number(s.reserved_usd).toFixed(4)} reserved at standard rates. Check billing if the request failed.`);
   const ready=plan ? auth.ready : s.key_present;
   $('banner').hidden = !s.demo && (ready || archive);
   text('banner',s.demo ? 'DEMO MODE — synthetic scene and scripted commentary. No Mario emulator or API calls.' : plan ? 'Continue with ChatGPT and grant plan usage. Observe works without signing in.' : 'Paid API mode. Set OPENAI_API_KEY locally before starting the server. Observe works without a key.');
-  const errorMessage=s.error || commandError || live?.auth_error;
+  const errorMessage=commandError || s.error || live?.auth_error;
   $('error').hidden = !errorMessage; text('error',errorMessage || '');
   $('demolabel').hidden = !s.demo; text('viewlabel',archive ? 'Archived screenshot' : 'Latest screenshot');
   if (s.image_url && s.image_url !== lastImage) { $('game').src = s.image_url; lastImage = s.image_url; }
@@ -41,7 +54,10 @@ function render(s) {
   const active = !terminal.has(s.status); const resumable = s.status==='paused';
   ['goal','budget','limit'].forEach(id => $(id).disabled=active || !!archive);
   const authBusy=live?.auth_status && live.auth_status!=='idle';
-  $('start').disabled=!!archive || (active && !resumable) || (!s.demo && !ready) || authBusy; $('start').firstChild.textContent=resumable ? 'Resume run ' : 'Start run ';
+  const modelBlocked=!s.demo && !resumable && (catalog.status==='loading' || (catalog.status==='ready' && (!chosen || (!plan && !chosen.profile_known))));
+  $('start').disabled=!!archive || (active && !resumable) || (!s.demo && !ready) || authBusy || modelBlocked; $('start').firstChild.textContent=resumable ? 'Resume run ' : 'Start run ';
+  $('models').disabled=!!archive || active || authBusy || s.demo || catalog.status==='loading';
+  $('refreshmodels').disabled=$('models').disabled || !ready || catalogRequest;
   $('step').disabled=$('start').disabled; $('observe').disabled=!!archive || active;
   $('pause').disabled=!!archive || !active || resumable || s.status==='stopping'; $('stop').disabled=!!archive || !active || s.status==='stopping';
   $('accountpanel').hidden=live?.billing_mode!=='chatgpt';
@@ -49,7 +65,7 @@ function render(s) {
   $('accounts').replaceChildren();
   if(!auth.accounts.length)$('accounts').append(new Option('No saved accounts',''));
   auth.accounts.forEach(a=>$('accounts').append(new Option(a.label,a.id)));$('accounts').value=auth.active || '';
-  ['login','addaccount','logout','accounts'].forEach(id=>$(id).disabled=!!archive || !terminal.has(live?.status) || authBusy);
+  ['login','addaccount','logout','accounts'].forEach(id=>$(id).disabled=!!archive || !terminal.has(live?.status) || authBusy || catalog.status==='loading');
   if(!auth.active)$('logout').disabled=true;
   if(auth.welcome && !archive && !$('welcome').open)$('welcome').showModal();
   $('export').hidden=$('events').hidden=!s.run_id;
@@ -64,15 +80,20 @@ async function refresh(){
   try{const r=await fetch('/api/state');if(!r.ok)throw Error('Dashboard unavailable');live=await r.json();controlToken=live.control_token;
     let s=live;if(archive){const old=await fetch(`/api/runs/${archive}/state`);if(!old.ok)throw Error('Saved run unavailable');s=await old.json();}
     render(s);text('connection',archive?'Viewing saved run':'Connected locally');$('dot').classList.remove('off');
+    const ready=live.billing_mode==='chatgpt' ? live.auth?.ready : live.key_present;
+    if(!archive && !live.demo && ready && !live.auth?.welcome && live.auth_status==='idle' && terminal.has(live.status) && live.model_catalog?.status==='idle' && !catalogRequest)requestCatalog();
   }catch(e){text('connection',e.message);$('dot').classList.add('off');['start','step','observe','pause','stop'].forEach(id=>$(id).disabled=true);}finally{busy=false;}
 }
 async function command(name,extra={}){
   commandError='';
   $('error').hidden=true;
-  try{const r=await fetch(`/api/${name}`,{method:'POST',headers:{'Content-Type':'application/json','X-Gpt64-Control':controlToken},body:JSON.stringify({goal:$('goal').value,max_steps:Number($('limit').value),budget_usd:Number($('budget').value),...extra})});const d=await r.json();if(!r.ok)throw Error(d.error);await refresh();setTimeout(loadRuns,500);
+  try{const r=await fetch(`/api/${name}`,{method:'POST',headers:{'Content-Type':'application/json','X-Gpt64-Control':controlToken},body:JSON.stringify({goal:$('goal').value,max_steps:Number($('limit').value),budget_usd:Number($('budget').value),model:selectedModel,...extra})});const d=await r.json();if(!r.ok)throw Error(d.error);await refresh();setTimeout(loadRuns,500);
   }catch(e){commandError=e.message;text('error',e.message);$('error').hidden=false;}
 }
 async function loadRuns(){try{const r=await fetch('/api/runs');const runs=await r.json();$('runs').replaceChildren(new Option('Live dashboard',''));runs.forEach(s=>$('runs').append(new Option(`${s.demo?'Demo · ':''}${s.goal.slice(0,35)} · ${s.steps} actions · ${s.status}`,s.run_id)));$('runs').value=archive;}catch{}}
+async function requestCatalog(){if(catalogRequest)return;catalogRequest=true;try{await command('models');}finally{catalogRequest=false;}}
+$('refreshmodels').addEventListener('click',requestCatalog);
+$('models').addEventListener('change',()=>{selectedModel=$('models').value;commandError='';if(live)render(live);});
 ['start','step','pause','stop','observe'].forEach(name=>$(name).addEventListener('click',()=>command(name)));
 $('login').addEventListener('click',()=>command('auth/login',{enable_plan:!live?.auth?.ready}));
 $('addaccount').addEventListener('click',()=>command('auth/login',{new:true}));
